@@ -1,0 +1,7 @@
+accounts.json
+reels.db
+*.log
+.env
+browser_profile/
+temp_reel.mp4
+__pycache__/

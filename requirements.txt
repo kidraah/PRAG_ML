@@ -1,0 +1,7 @@
+playwright
+playwright-stealth
+mlx-whisper
+ffmpeg-python
+aiohttp
+pandas
+python-dotenv
