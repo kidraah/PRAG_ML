@@ -30,7 +30,8 @@ SPARK = "▁▂▃▄▅▆▇█"
 ROWS_SQL = """
 SELECT i.session_id, i.seq, i.code, i.url, i.creator, i.is_ad, i.score_basis, i.value_score,
        i.topic, i.summary, i.decision, i.decision_basis, i.explored, i.dwell_seconds,
-       i.gate_audit, i.score_seconds, i.liked, i.saved, i.followed, s.scorer
+       i.gate_audit, i.score_seconds, i.liked, i.saved, i.followed, i.rule_score, i.ready_on_arrival,
+       s.scorer
 FROM impressions i JOIN sessions s ON s.id = i.session_id
 WHERE s.account = ?
 ORDER BY i.session_id, i.seq
@@ -167,6 +168,10 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
         if dwell:
             parts.append(f"{action} {_median(dwell):.1f}s (n={len(dwell)})")
     out.append("  " + (" · ".join(parts) or "—"))
+    known = [r["ready_on_arrival"] for r in organic if r["ready_on_arrival"] is not None]
+    if known:
+        out.append(f"  known before the reel appeared (preloaded feed data): {sum(known) / len(known):.0%}"
+                   " — skips of those are flicks")
     late = sum(r["decision_basis"] == "timeout" for r in organic)
     timing = _median([r["score_seconds"] for r in organic if r["score_seconds"] is not None])
     if organic:
@@ -183,6 +188,15 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
         missed = sum(bool(on_target(r)) for r in audits)
         out.append(f"Gate audit: {len(audits)} gated reels scored anyway — {missed} were informative "
                    f"({missed / len(audits):.0%}); if this is high, loosen SKIP_KEYWORDS.")
+
+    ruled = [r for r in rows if r["rule_score"] is not None and on_target(r) is not None]
+    if ruled:
+        watched = [r for r in ruled if r["rule_score"] >= WATCH_THRESHOLD]
+        informative = [r for r in ruled if on_target(r)]
+        hits = sum(bool(on_target(r)) for r in watched)
+        out += ["", f"Quick rules vs review ({len(ruled)} reviewed reels)",
+                f"  rules watched {len(watched)}: {hits} informative, {len(watched) - hits} not"
+                f" · informative reels the rules skipped: {len(informative) - hits} of {len(informative)}"]
 
     scored = [r for r in rows if r["score_basis"] == "score"]
     topics = Counter((r["topic"] or "").strip().lower() for r in scored[-200:] if r["topic"])

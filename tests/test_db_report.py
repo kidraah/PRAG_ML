@@ -68,6 +68,19 @@ class ImpressionTests(unittest.TestCase):
         self.assertEqual(load_creator_history("new", "test_acct", conn), ([("d", "W", 0.95)], {"d"}))
 
 
+class MigrationTests(unittest.TestCase):
+    def test_older_database_gets_new_columns(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE impressions (id INTEGER PRIMARY KEY, session_id INTEGER, seq INTEGER, creator TEXT)")
+        conn.execute("INSERT INTO impressions (session_id, seq) VALUES (1, 1)")
+        init_db(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(impressions)")}
+        self.assertTrue({"rule_score", "rule_reason", "ready_on_arrival"} <= columns)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM impressions").fetchone()[0], 1)  # data kept
+        init_db(conn)  # running again is harmless
+
+
 class ChooseAccountTests(unittest.TestCase):
     accounts = [{"username": "main", "status": "ACTIVE"}, {"username": "test1", "status": "ACTIVE"},
                 {"username": "old", "status": "BANNED"}]

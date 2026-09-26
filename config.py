@@ -58,6 +58,30 @@ SKIP_KEYWORDS = {
 }
 
 
+# Quick rules (main.py --rules): a reel is watched when its account is one
+# this account follows, or its caption / hashtags contain one of these.
+# Latin words match whole words (case-insensitive); Devanagari match anywhere.
+# Avoid ambiguous words: "court" is also a tennis court, and "सरकार" / "sarkar" is
+# also a devotional title for a deity.
+NEWS_KEYWORDS = {
+    # English / Hinglish
+    "news", "breaking", "alert", "update", "updates", "government", "govt", "yojana",
+    "scheme", "policy", "rbi", "sebi", "gst", "tax", "budget", "election", "supremecourt", "highcourt", "police",
+    "arrest", "imd", "exam", "result", "recruitment", "bharti", "vacancy", "jobs", "upsc", "ssc",
+    "neet", "jee", "cbse", "scholarship", "price", "petrol", "diesel", "inflation", "economy",
+    "sensex", "nifty", "isro", "scam", "fraud", "cybercrime", "parliament", "minister",
+    "notification", "deadline", "warning", "accident", "flood", "earthquake", "cyclone", "heatwave",
+    # Hindi
+    "खबर", "समाचार", "ब्रेकिंग", "अलर्ट", "चेतावनी", "केंद्र सरकार", "राज्य सरकार", "सरकारी", "योजना",
+    "नियम", "बजट", "टैक्स",
+    "चुनाव", "अदालत", "पुलिस", "गिरफ्तार", "मौसम", "परीक्षा", "रिजल्ट", "भर्ती", "नौकरी",
+    "छात्रवृत्ति", "महंगाई", "पेट्रोल", "धोखाधड़ी", "साइबर", "ठगी", "हादसा", "बाढ़", "भूकंप",
+    "मंत्री", "संसद", "फैसला",
+}
+# Parts of an account name that suggest a news page ("nationupdate3", "aajtaknews").
+NEWS_CREATOR_HINTS = ("news", "khabar", "samachar", "update", "times", "today", "express", "report")
+
+
 # ── Perception ────────────────────────────────────────────────────────
 
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
@@ -91,6 +115,7 @@ REWATCH_FACTOR = (1.3, 2.0)            # dwell as a multiple of the reel's durat
 REWATCH_MAX_SECONDS = 120
 
 SKIP_DWELL = (1.2, 3.0)                # seconds on screen before skipping
+FLICK_DWELL = (0.6, 1.4)               # skip already decided before the reel appeared (preloaded feed data)
 AD_DWELL = (1.0, 2.5)
 OBSERVE_DWELL = (2.5, 5.0)             # --observe: every reel stays this long; nothing is scored or engaged with
 WATCH_FRACTION = (0.35, 0.70)          # of the reel's duration

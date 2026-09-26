@@ -27,8 +27,10 @@ IMPRESSION_COLUMNS = (
     "score_basis", "value_score", "is_informational", "topic", "summary",
     "reasoning", "error", "gate_keyword", "gate_audit", "score_seconds", "scored_at",
     "decision", "decision_basis", "explored", "dwell_seconds", "planned",
-    "liked", "saved", "followed",
+    "liked", "saved", "followed", "rule_score", "rule_reason", "ready_on_arrival",
 )
+# Columns added after the first release; init_db adds them to older databases.
+LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arrival", "INTEGER"))
 SCORE_COLUMNS = (
     "transcript", "transcript_language", "cover_text", "score_basis",
     "value_score", "is_informational", "topic", "summary", "reasoning",
@@ -114,12 +116,19 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
             planned             TEXT,     -- engagement the policy asked for, e.g. "like,save"
             liked               INTEGER NOT NULL DEFAULT 0,
             saved               INTEGER NOT NULL DEFAULT 0,
-            followed            INTEGER NOT NULL DEFAULT 0
+            followed            INTEGER NOT NULL DEFAULT 0,
+            rule_score          REAL,     -- the quick rules' score (--rules), kept next to the review label
+            rule_reason         TEXT,
+            ready_on_arrival    INTEGER   -- decision was ready the moment the reel appeared (preloaded feed data)
         );
         CREATE INDEX IF NOT EXISTS idx_impressions_session ON impressions(session_id, seq);
         CREATE INDEX IF NOT EXISTS idx_impressions_creator ON impressions(creator);
         """
     )
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(impressions)")}
+    for column, kind in LATER_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE impressions ADD COLUMN {column} {kind}")
     conn.commit()
     if own:
         conn.close()

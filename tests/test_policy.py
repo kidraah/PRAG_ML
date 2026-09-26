@@ -6,7 +6,7 @@ import unittest
 from agent.bandit import decide
 from agent.creators import CreatorMemory
 from config import (
-    AD_DWELL, EXPLORATION_RATE, FULL_WATCH_BOUNDS, LIKE_PROBABILITY, LIKE_THRESHOLD,
+    AD_DWELL, EXPLORATION_RATE, FLICK_DWELL, FULL_WATCH_BOUNDS, LIKE_PROBABILITY, LIKE_THRESHOLD,
     REWATCH_FACTOR, REWATCH_MAX_SECONDS, REWATCH_PROBABILITY, SAVE_PROBABILITY,
     SKIP_DWELL, WATCH_DWELL_BOUNDS,
 )
@@ -28,10 +28,10 @@ NO_CHANCE = FixedRandom(0.999)      # none of them do
 
 
 def _decide(value, basis="score", duration=30.0, has_liked=False, has_saved=False, follow_ok=False,
-            likes_left=10, saves_left=10, rng=None):
+            likes_left=10, saves_left=10, rng=None, pre_analyzed=False):
     return decide(value_score=value, basis=basis, duration=duration, has_liked=has_liked,
                   has_saved=has_saved, follow_ok=follow_ok, likes_left=likes_left,
-                  saves_left=saves_left, rng=rng or random.Random(1))
+                  saves_left=saves_left, rng=rng or random.Random(1), pre_analyzed=pre_analyzed)
 
 
 class DecideTests(unittest.TestCase):
@@ -44,6 +44,18 @@ class DecideTests(unittest.TestCase):
         ad = _decide(None, basis="ad")
         self.assertEqual(ad.action, "SKIP")
         self.assertTrue(AD_DWELL[0] <= ad.dwell <= AD_DWELL[1])
+
+    def test_junk_known_before_it_appears_is_flicked(self):
+        for value, basis in ((0.05, "score"), (None, "keyword_gate"), (None, "creator_prior")):
+            flick = _decide(value, basis=basis, pre_analyzed=True)
+            self.assertEqual(flick.action, "SKIP")
+            self.assertTrue(FLICK_DWELL[0] <= flick.dwell <= FLICK_DWELL[1], basis)
+        # Decided only once on screen, or an ad: the usual skip time.
+        self.assertTrue(SKIP_DWELL[0] <= _decide(0.05).dwell <= SKIP_DWELL[1])
+        self.assertTrue(SKIP_DWELL[0] <= _decide(None, basis="timeout", pre_analyzed=True).dwell <= SKIP_DWELL[1])
+        self.assertTrue(AD_DWELL[0] <= _decide(None, basis="ad", pre_analyzed=True).dwell <= AD_DWELL[1])
+        # Watching is unaffected.
+        self.assertEqual(_decide(0.6, pre_analyzed=True).action, "WATCH")
 
     def test_top_reel_rewatched_liked_saved_when_chances_allow(self):
         d = _decide(0.95, duration=40.0, follow_ok=True, rng=EVERY_CHANCE)

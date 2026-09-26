@@ -10,7 +10,8 @@ from agent.bandit import Decision
 from agent.creators import CreatorMemory
 from agent.pipeline import ScoreResult, ScoringPipeline
 from automation.feed_capture import FeedCatalog, ReelMeta
-from main import Performed, impression_row
+from agent.rules import RuleVerdict
+from main import Performed, describe, impression_row
 from perception.local_evaluator import ScoringError, ValueJudgement
 from tests.fixtures import feed_page, make_media
 
@@ -201,6 +202,17 @@ class ImpressionRowTests(unittest.TestCase):
         self.assertNotIn("score_basis", row)
         self.assertNotIn("scored_at", row)
         self.assertEqual((row["hashtags"], row["decision_basis"], row["dwell_seconds"]), ("a b", "timeout", 6.02))
+
+    def test_console_line_shows_rule_and_flick(self):
+        meta = ReelMeta(code="F", creator="dull_page", duration=12.0, audio_type="music")
+        flick = describe(7, meta, {}, False, None, Decision("SKIP", 0.9, "rules"), 0.93, Performed(), True,
+                         RuleVerdict(0.1, "no news signal"), ready=True)
+        self.assertIn("rule 0.1 · no news signal", flick)
+        self.assertIn("⚡", flick)
+        watched = describe(8, meta, {}, False, None, Decision("WATCH", 9.0, "rules"), 9.1, Performed(), True,
+                           RuleVerdict(0.8, "follows @aajtak"), ready=True)
+        self.assertIn("rule 0.8 · follows @aajtak", watched)
+        self.assertNotIn("⚡", watched)
 
     def test_scored_row(self):
         meta = ReelMeta(code="S", creator="u")

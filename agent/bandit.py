@@ -22,6 +22,7 @@ from config import (
     AD_DWELL,
     EXPLORATION_RATE,
     EXPLORE_MIN_SCORE,
+    FLICK_DWELL,
     FULL_WATCH_BOUNDS,
     FULL_WATCH_FRACTION,
     LIKE_PROBABILITY,
@@ -53,6 +54,11 @@ class Decision:
     def planned(self) -> str:
         """Engagement the policy asked for, e.g. 'like,save'."""
         return ",".join(name for name, on in (("like", self.like), ("save", self.save), ("follow", self.follow)) if on)
+
+
+# Skip reasons that can be known before a reel appears (the others — timeout,
+# no metadata, LLM error — only happen once it's on screen).
+PRE_DECIDABLE = ("keyword_gate", "creator_prior")
 
 
 def _clamp(value: float, bounds: tuple[float, float]) -> float:
@@ -99,6 +105,7 @@ def decide(
     likes_left: int,
     saves_left: int,
     rng: random.Random,
+    pre_analyzed: bool = False,
 ) -> Decision:
     """Choose an action and watch duration for the reel on screen.
 
@@ -106,10 +113,15 @@ def decide(
     (ad, gate, creator memory, missing metadata, timeout, LLM error) skips.
     follow_ok says whether this reel's creator qualifies for a follow, and
     likes_left / saves_left are what remains of this session's caps —
-    all tracked by the caller.
+    all tracked by the caller. pre_analyzed means the verdict was ready
+    before the reel reached the screen (from the preloaded feed data), so a
+    skip is a quick flick rather than a considered one.
     """
+    skip_dwell = FLICK_DWELL if pre_analyzed else SKIP_DWELL
     if basis != "score" or value_score is None:
-        return Decision("SKIP", rng.uniform(*(AD_DWELL if basis == "ad" else SKIP_DWELL)), basis)
+        if basis == "ad":
+            return Decision("SKIP", rng.uniform(*AD_DWELL), basis)
+        return Decision("SKIP", rng.uniform(*(skip_dwell if basis in PRE_DECIDABLE else SKIP_DWELL)), basis)
 
     if value_score >= LIKE_THRESHOLD:
         like = (
@@ -128,4 +140,4 @@ def decide(
         return Decision("WATCH", watch_dwell(duration, rng), basis)
     if value_score >= EXPLORE_MIN_SCORE and rng.random() < EXPLORATION_RATE:
         return Decision("WATCH", watch_dwell(duration, rng), basis, explored=True)
-    return Decision("SKIP", rng.uniform(*SKIP_DWELL), basis)
+    return Decision("SKIP", rng.uniform(*skip_dwell), basis)

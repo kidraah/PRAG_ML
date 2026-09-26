@@ -68,6 +68,20 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("await review", after)
         self.assertIn("2 judged", after)
 
+    def test_report_compares_rules_with_review_and_shows_preloading(self):
+        conn, sid = _recorded_session(self)
+        # The rules watched R1 (news word) and skipped R2 — both known before the reels appeared.
+        conn.execute("UPDATE impressions SET rule_score = 0.6, rule_reason = 'news word: rbi', ready_on_arrival = 1 WHERE code = 'R1'")
+        conn.execute("UPDATE impressions SET rule_score = 0.1, rule_reason = 'no news signal', ready_on_arrival = 1 WHERE code = 'R2'")
+        conn.execute("UPDATE impressions SET ready_on_arrival = 0 WHERE code = 'AD'")
+        conn.commit()
+        import_judgements(conn, [{"session": sid, "code": "R1", "value_score": 0.9},
+                                 {"session": sid, "code": "R2", "value_score": 0.5}])
+        text = render(conn)
+        self.assertIn("known before the reel appeared (preloaded feed data): 100%", text)  # ads don't count
+        self.assertIn("Quick rules vs review (2 reviewed reels)", text)
+        self.assertIn("rules watched 1: 1 informative, 0 not · informative reels the rules skipped: 1 of 2", text)
+
 
 if __name__ == "__main__":
     unittest.main()
