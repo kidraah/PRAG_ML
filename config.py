@@ -133,6 +133,16 @@ CREATOR_SKIP_MIN_SEEN = 4              # skip a creator's reels unscored once th
 CREATOR_SKIP_MAX_SCORE = 0.30          # ...and none scored above this
 
 
+# ── Phase 2: stories, verification, digest ────────────────────────────
+
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # small, multilingual, not an LLM
+STORY_DISTANCE = 0.45                  # reels closer than this (cosine distance of topic + summary) are one story
+DIGEST_HOURS = 24                      # the digest covers what the agent saw in this many hours
+VERIFY_DAYS = 3                        # look for news coverage at least this far back...
+VERIFY_MAX_DAYS = 30                   # ...or back to the reel's posting date, up to this
+VERIFY_SIMILARITY = 0.60               # a headline covers the story if its meaning is this close to the summary
+
+
 # ── Sessions & verification ───────────────────────────────────────────
 
 SESSION_MINUTES = 40

@@ -4,6 +4,11 @@ mlx-whisper
 easyocr
 aiohttp
 python-dotenv
+# phase 2: story grouping, news verification, the preference model
+sentence-transformers
+scikit-learn
+numpy
+joblib
 
 # Also needed:
 #   ffmpeg        brew install ffmpeg   (mlx-whisper decodes audio with it)

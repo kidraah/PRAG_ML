@@ -11,3 +11,5 @@ reels.db-*
 debug/
 .backup/
 browser_profiles/
+digests/
+models/
