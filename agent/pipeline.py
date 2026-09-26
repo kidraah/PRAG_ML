@@ -9,7 +9,9 @@ is waiting, so every impression still gets a score for the report.
 
 Per reel: instant gates (ad, creator memory, keyword gate) → in parallel,
 the audio-only track → Whisper and the cover image → OCR → the local LLM.
-MLX (Whisper) and torch (EasyOCR) each get one dedicated thread.
+The LLM call dominates (~4 s), so SCORING_WORKERS reels are scored at once
+and LM Studio runs their predictions in parallel. MLX (Whisper) and torch
+(EasyOCR) each get one dedicated thread that the workers share.
 """
 
 import asyncio
@@ -25,7 +27,7 @@ import aiohttp
 
 from agent.creators import CreatorMemory
 from automation.feed_capture import FeedCatalog, ReelMeta
-from config import EXPLORATION_RATE, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
+from config import EXPLORATION_RATE, SCORING_WORKERS, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
 from perception import ocr, transcriber
 from perception.heuristics import keyword_gate
 from perception.local_evaluator import ScoringError, evaluate_value_async
@@ -89,7 +91,7 @@ class ScoringPipeline:
         self._results: dict[str, ScoreResult] = {}
         self._done: dict[str, asyncio.Event] = {}
         self._queued: set[str] = set()
-        self._running: str | None = None
+        self._running: set[str] = set()
         self._current_code: str | None = None
         self._current_index = -1
         self._wake = asyncio.Event()
@@ -130,7 +132,7 @@ class ScoringPipeline:
 
     def enqueue(self, meta: ReelMeta) -> None:
         """Queue a reel for scoring (FeedCatalog calls this for each new feed reel)."""
-        if meta.code in self._results or meta.code == self._running:
+        if meta.code in self._results or meta.code in self._running:
             return
         self._queued.add(meta.code)
         self._done.setdefault(meta.code, asyncio.Event())
@@ -175,8 +177,11 @@ class ScoringPipeline:
         return None
 
     async def run(self) -> None:
-        """Worker loop; runs until cancelled."""
+        """Score reels with SCORING_WORKERS concurrent workers until cancelled."""
         self._open_sessions()
+        await asyncio.gather(*(self._work() for _ in range(max(1, SCORING_WORKERS))))
+
+    async def _work(self) -> None:
         while True:
             meta = self._pick_next()
             if meta is None:
@@ -184,7 +189,7 @@ class ScoringPipeline:
                 await self._wake.wait()
                 continue
             self._queued.discard(meta.code)
-            self._running = meta.code
+            self._running.add(meta.code)
             try:
                 result = await self._score(meta)
             except asyncio.CancelledError:
@@ -192,7 +197,7 @@ class ScoringPipeline:
             except Exception as exc:  # noqa: BLE001 — never let one reel kill the worker
                 result = ScoreResult(meta.code, basis="llm_error", error=f"pipeline: {exc}")
             finally:
-                self._running = None
+                self._running.discard(meta.code)
             self._results[meta.code] = result
             self._done.setdefault(meta.code, asyncio.Event()).set()
             if result.basis == "score":

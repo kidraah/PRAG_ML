@@ -9,8 +9,8 @@ Answers "is the account curated yet?" from the impressions log:
   • what decided each reel, and an audit of the keyword / creator gates
   • top topics, best creators, and the latest valuable reels to eyeball
 
-Only reels scored under the current INTERESTS + model are compared; edit
-INTERESTS and the trend starts over.
+Only reels scored with the current prompt (INTERESTS included) and model
+are compared; change either and the trend starts over.
 
     python -m dashboard.report [--window 50] [--recent 8]
 """
@@ -107,7 +107,7 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8) -> str:
     older = len(all_rows) - len(rows)
     out.append(
         f"Scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · {len(judged)} judged"
-        + (f"  ({older} reels from older INTERESTS/model versions not compared)" if older else "")
+        + (f"  ({older} reels scored with an older prompt/INTERESTS/model not compared)" if older else "")
     )
 
     out += ["", "Sessions",

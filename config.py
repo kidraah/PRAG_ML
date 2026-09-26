@@ -11,8 +11,10 @@ the account's feed is steered toward whatever it describes.
 LM_STUDIO_URL = "http://127.0.0.1:1234/v1/chat/completions"
 LM_STUDIO_MODELS_URL = "http://127.0.0.1:1234/v1/models"
 LM_STUDIO_CLI = "~/.lmstudio/bin/lms"   # used to start the server / load the model if it's down
-LLM_MODEL_NAME = "meta-llama-3.1-8b-instruct"
+LLM_MODEL_NAME = "qwen/qwen3.5-9b"
 LLM_CONTEXT_LENGTH = 4096
+LLM_THINKING = False                   # False: reasoning models (Qwen3.5, ...) answer directly instead of thinking first
+SCORING_WORKERS = 2                    # reels scored at once; LM Studio must allow this many parallel predictions
 
 
 # ── What counts as valuable ───────────────────────────────────────────
@@ -94,7 +96,7 @@ WATCH_FRACTION = (0.35, 0.70)          # of the reel's duration
 WATCH_DWELL_BOUNDS = (5.0, 25.0)
 FULL_WATCH_FRACTION = (0.90, 1.00)
 FULL_WATCH_BOUNDS = (8.0, 75.0)
-MAX_DECISION_WAIT = 6.0                # a reel still unscored after this long is skipped
+MAX_DECISION_WAIT = 3.5                # a reel still unscored after this long is skipped (and scored later for the report)
 
 EXPLORATION_RATE = 0.10                # chance to watch a borderline reel / score a gated one
 EXPLORE_MIN_SCORE = 0.25               # borderline = between this and WATCH_THRESHOLD

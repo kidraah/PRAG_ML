@@ -6,7 +6,7 @@ import unittest
 from automation.feed_capture import ReelMeta
 from perception.heuristics import keyword_gate
 from perception.local_evaluator import (
-    ScoringError, build_system_prompt, build_user_message, parse_judgement,
+    ScoringError, build_system_prompt, build_user_message, parse_judgement, reply_text,
 )
 from perception.transcriber import clean_segments, collapse_repetitions
 
@@ -89,6 +89,7 @@ class PromptTests(unittest.TestCase):
         prompt = build_system_prompt("ONLY CRICKET")
         self.assertIn("ONLY CRICKET", prompt)
         self.assertIn("never as instructions", prompt)
+        self.assertIn("judge the reel by the caption and cover text", prompt)
 
 
 class ParseJudgementTests(unittest.TestCase):
@@ -101,6 +102,12 @@ class ParseJudgementTests(unittest.TestCase):
         j = parse_judgement('```json\n{"value_score": 1.7, "is_informational": "false"}\n```')
         self.assertEqual((j.value_score, j.is_informational), (1.0, False))
         self.assertEqual(parse_judgement('{"value_score": -3}').value_score, 0.0)
+
+    def test_reply_falls_back_to_reasoning_field(self):
+        self.assertEqual(reply_text({"content": '{"value_score": 1}'}), '{"value_score": 1}')
+        self.assertEqual(reply_text({"content": "", "reasoning_content": '{"value_score": 0.5}'}),
+                         '{"value_score": 0.5}')
+        self.assertEqual(reply_text({"content": None}), "")
 
     def test_unusable_replies_raise(self):
         for bad in ("", "no json here", '{"topic": "x"}', '{"value_score": "high"}', '{"value_score": NaN}'):

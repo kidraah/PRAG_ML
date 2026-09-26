@@ -133,8 +133,42 @@ class WorkerTests(unittest.TestCase):
         a, b, missing, seen, creators = asyncio.run(scenario())
         self.assertEqual((a.value_score, b.value_score), (0.9, 0.2))
         self.assertIsNone(missing)
-        self.assertEqual(seen, [("A", "score"), ("B", "score")])
+        self.assertEqual(sorted(seen), [("A", "score"), ("B", "score")])
         self.assertEqual((creators.high_count("u1"), creators.seen("u2")), (1, 1))
+
+    def test_workers_score_reels_concurrently(self):
+        async def scenario():
+            catalog = FeedCatalog()
+            p = _pipeline(catalog)
+            catalog.on_new_feed_reel = p.enqueue
+            in_flight = peak = 0
+            both_started = asyncio.Event()
+
+            async def slow_evaluate(_session, meta, *args, **kwargs):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                if in_flight >= 2:
+                    both_started.set()
+                # Times out (→ llm_error) if reels are scored one at a time.
+                await asyncio.wait_for(both_started.wait(), timeout=1.0)
+                in_flight -= 1
+                return _judgement(0.5)
+
+            with mock.patch.object(p, "_perceive", mock.AsyncMock(return_value=("", None, "", []))), \
+                 mock.patch.object(pipeline_module, "evaluate_value_async", slow_evaluate), \
+                 mock.patch.object(pipeline_module, "SCORING_WORKERS", 2):
+                worker = asyncio.create_task(p.run())
+                catalog.ingest_doc(feed_page(make_media("A"), make_media("B")))
+                results = [await p.wait_for(code, timeout=2) for code in ("A", "B")]
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+            await p.close()
+            return results, peak
+
+        results, peak = asyncio.run(scenario())
+        self.assertEqual(peak, 2)
+        self.assertEqual([r.basis for r in results], ["score", "score"])
 
 
 class ImpressionRowTests(unittest.TestCase):
