@@ -100,6 +100,22 @@ class GateTests(unittest.TestCase):
         result, _ = self.run_score(ReelMeta(code="D", creator="dull"), creators=creators)
         self.assertEqual(result.basis, "creator_prior")
 
+    def test_observe_mode_records_without_judging(self):
+        async def scenario():
+            p = ScoringPipeline(FeedCatalog(), CreatorMemory(), rng=_NeverExplore(), user_agent="test",
+                                use_llm=False)
+            evaluate = mock.AsyncMock()
+            with mock.patch.object(p, "_perceive", mock.AsyncMock(return_value=("बोले", "hi", "headline", []))), \
+                 mock.patch.object(pipeline_module, "evaluate_value_async", evaluate):
+                result = await p._score(ReelMeta(code="O", caption="best recipe"))  # gates don't apply
+            await p.close()
+            return result, evaluate.await_count
+
+        result, llm_calls = asyncio.run(scenario())
+        self.assertEqual((result.basis, result.transcript, result.cover_text, result.value_score),
+                         ("observed", "बोले", "headline", None))
+        self.assertEqual(llm_calls, 0)
+
     def test_llm_error_is_an_error_not_a_zero(self):
         result, _ = self.run_score(ReelMeta(code="E"), error=ScoringError("LM Studio unreachable"))
         self.assertEqual(result.basis, "llm_error")

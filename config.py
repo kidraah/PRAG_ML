@@ -92,6 +92,7 @@ REWATCH_MAX_SECONDS = 120
 
 SKIP_DWELL = (1.2, 3.0)                # seconds on screen before skipping
 AD_DWELL = (1.0, 2.5)
+OBSERVE_DWELL = (2.5, 5.0)             # --observe: every reel stays this long; nothing is scored or engaged with
 WATCH_FRACTION = (0.35, 0.70)          # of the reel's duration
 WATCH_DWELL_BOUNDS = (5.0, 25.0)
 FULL_WATCH_FRACTION = (0.90, 1.00)

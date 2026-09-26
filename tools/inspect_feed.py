@@ -11,7 +11,7 @@ capture layer stops finding reel metadata, then compare the dump against
 `automation/feed_capture.py`.
 
 Usage:
-    python -m tools.inspect_feed [--reels 4] [--out debug/feed_dump]
+    python -m tools.inspect_feed [--account NAME] [--reels 4] [--out debug/feed_dump]
 """
 
 import argparse
@@ -20,7 +20,8 @@ import json
 import os
 import time
 
-from automation.browser_driver import close_browser, init_browser
+from automation.browser_driver import close_browser, init_browser, profile_dir
+from database.db import choose_account, list_accounts
 
 ACTIVE_REEL_DOM_JS = """
 () => {
@@ -77,9 +78,9 @@ EMBEDDED_JSON_JS = """
 """
 
 
-async def inspect(num_reels: int, out_dir: str) -> None:
+async def inspect(num_reels: int, out_dir: str, account: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
-    context, page = await init_browser()
+    context, page = await init_browser(profile_dir(account))
     counter = {"json": 0}
     media_log: list[dict] = []
 
@@ -148,8 +149,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--reels", type=int, default=4, help="How many reels to step through")
     parser.add_argument("--out", default="debug/feed_dump", help="Output directory")
+    parser.add_argument("--account", help="Whose browser profile to use (required when several are ACTIVE)")
     args = parser.parse_args()
-    asyncio.run(inspect(args.reels, args.out))
+    account, problem = choose_account(list_accounts(), args.account)
+    if problem:
+        print(f"⚠️  {problem}")
+        return
+    asyncio.run(inspect(args.reels, args.out, account))
 
 
 if __name__ == "__main__":

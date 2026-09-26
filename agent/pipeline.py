@@ -37,7 +37,7 @@ from perception.media import download, new_session
 @dataclass
 class ScoreResult:
     code: str
-    basis: str                          # score | ad | keyword_gate | creator_prior | llm_error
+    basis: str                          # score | ad | keyword_gate | creator_prior | llm_error | observed
     value_score: float | None = None
     is_informational: bool | None = None
     topic: str = ""
@@ -80,12 +80,14 @@ class ScoringPipeline:
         user_agent: str,
         on_result: Callable[[ReelMeta, ScoreResult], None] | None = None,
         backfill_window: int = 8,
+        use_llm: bool = True,
     ) -> None:
         self.catalog = catalog
         self.creators = creators
         self.rng = rng
         self.on_result = on_result
         self.backfill_window = backfill_window
+        self.use_llm = use_llm  # False: record what each reel says (--observe) without judging it
         self._user_agent = user_agent
 
         self._results: dict[str, ScoreResult] = {}
@@ -112,7 +114,8 @@ class ScoringPipeline:
         if USE_COVER_OCR:
             loads.append(loop.run_in_executor(self._ocr, ocr.warm_up))
         await asyncio.gather(*loads)
-        await evaluate_value_async(self._llm, ReelMeta(code="warmup", caption="Warm-up request."))
+        if self.use_llm:
+            await evaluate_value_async(self._llm, ReelMeta(code="warmup", caption="Warm-up request."))
 
     async def close(self) -> None:
         for session in (self._media, self._llm):
@@ -211,6 +214,12 @@ class ScoringPipeline:
         started = time.monotonic()
         if meta.is_ad:
             return ScoreResult(meta.code, basis="ad")
+        if not self.use_llm:
+            transcript, language, cover_text, problems = await self._perceive(meta)
+            return ScoreResult(
+                meta.code, basis="observed", transcript=transcript, transcript_language=language,
+                cover_text=cover_text, error="; ".join(problems) or None, seconds=time.monotonic() - started,
+            )
 
         gate, keyword = None, ""
         if self.creators.should_skip(meta.creator):

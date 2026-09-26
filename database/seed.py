@@ -3,6 +3,13 @@ FeedLab — Account Seeder
 
 Reads `accounts.json` from the project root and inserts each entry into
 the `accounts` table using INSERT OR IGNORE to avoid duplicates.
+
+Entries only need a username, e.g. [{"username": "my_test_account"}];
+entries with a blank username are skipped. Passwords are never copied
+into the database. If an entry has one, the agent uses it (read from
+accounts.json at that moment, never printed) to log the account's browser
+profile in; otherwise you log in by hand in the window on its first run.
+Either way, that account's browser profile keeps the login afterwards.
 """
 
 import json
@@ -16,29 +23,44 @@ ACCOUNTS_JSON = os.path.join(
 )
 
 
-def seed_accounts(json_path: str = ACCOUNTS_JSON) -> list[dict]:
+def seed_accounts(json_path: str = ACCOUNTS_JSON, conn: sqlite3.Connection | None = None) -> list[str]:
     """Read accounts from a JSON file and insert them into the database.
 
-    Returns the list of account dicts that were processed.
+    Returns the usernames that were processed (blank slots are skipped).
     """
     with open(json_path, "r") as fh:
         accounts = json.load(fh)
 
-    conn = get_connection()
-    cursor = conn.cursor()
-
+    own = conn is None
+    conn = conn or get_connection()
+    usernames = []
     for acct in accounts:
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO accounts (username, password, status)
-            VALUES (?, ?, ?)
-            """,
-            (acct["username"], acct["password"], acct.get("status", "WARMING_UP")),
+        username = (acct.get("username") or "").strip().lstrip("@")
+        if not username:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO accounts (username, password, status) VALUES (?, '', ?)",
+            (username, acct.get("status") or "ACTIVE"),
         )
+        usernames.append(username)
 
     conn.commit()
-    conn.close()
-    return accounts
+    if own:
+        conn.close()
+    return usernames
+
+
+def account_password(username: str, json_path: str = ACCOUNTS_JSON) -> str | None:
+    """The account's password from accounts.json, if one is filled in (read only to log in)."""
+    try:
+        with open(json_path) as fh:
+            accounts = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    for acct in accounts:
+        if (acct.get("username") or "").strip().lstrip("@") == username:
+            return acct.get("password") or None
+    return None
 
 
 def print_accounts_table() -> None:
@@ -73,7 +95,7 @@ if __name__ == "__main__":
     # Ensure the schema exists before seeding
     init_db()
 
-    accounts = seed_accounts()
-    print(f"\n🌱  Seeded {len(accounts)} account(s) from accounts.json")
+    usernames = seed_accounts()
+    print(f"\n🌱  Seeded {len(usernames)} account(s) from accounts.json")
 
     print_accounts_table()

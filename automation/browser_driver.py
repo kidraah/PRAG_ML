@@ -18,7 +18,7 @@ from playwright_stealth import Stealth
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROFILE_DIR = os.path.join(PROJECT_ROOT, "browser_profile")
+PROFILES_DIR = os.path.join(PROJECT_ROOT, "browser_profiles")
 REELS_URL = "https://www.instagram.com/reels/"
 REEL_CODE_RE = re.compile(r"instagram\.com/reels?/([A-Za-z0-9_-]{6,})")
 
@@ -37,7 +37,12 @@ async def _human_delay(lo: float = 0.5, hi: float = 1.5) -> None:
 
 # ── Browser Lifecycle ─────────────────────────────────────────────────
 
-async def init_browser(user_data_dir: str = PROFILE_DIR) -> tuple[BrowserContext, Page]:
+def profile_dir(account: str) -> str:
+    """Each Instagram account gets its own browser profile, which holds its login."""
+    return os.path.join(PROFILES_DIR, account)
+
+
+async def init_browser(user_data_dir: str) -> tuple[BrowserContext, Page]:
     """Launch a persistent Chromium context with stealth in async mode.
 
     Parameters
@@ -92,14 +97,86 @@ async def open_reels(page: Page) -> None:
     print("  🎬  Opened Instagram Reels.")
 
 
+NOT_LOGGED_IN_URLS = ("accounts/login", "accounts/emailsignup", "/challenge", "two_factor", "accounts/suspended")
+
+
 async def is_logged_in(page: Page) -> bool:
-    """Check whether Instagram is showing a login wall instead of the feed."""
+    """Whether Instagram shows the logged-in app (not a login, sign-up or security-check page)."""
     await page.wait_for_load_state("domcontentloaded")
     await asyncio.sleep(2)
     url = page.url.lower()
-    if "accounts/login" in url or "accounts/emailsignup" in url:
+    if any(part in url for part in NOT_LOGGED_IN_URLS):
         return False
-    return await page.query_selector('input[name="username"]') is None
+    if await page.query_selector('input[type="password"]'):
+        return False
+    # Only the logged-in app has the navigation bar.
+    return await page.query_selector('a[href="/explore/"], a[href^="/direct/inbox"]') is not None
+
+
+async def wait_for_login(page: Page, timeout: float = 300.0) -> bool:
+    """Wait up to `timeout` seconds for someone to log in by hand in the browser window."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        try:
+            if "accounts/onetap" in page.url:  # "Save your login info?" — the profile keeps it anyway
+                await page.goto("https://www.instagram.com/", wait_until="domcontentloaded")
+            if await is_logged_in(page):
+                return True
+        except Exception:  # noqa: BLE001 — the page navigates while the login form submits
+            pass
+        await asyncio.sleep(3)
+    return False
+
+
+LOGIN_URL = "https://www.instagram.com/accounts/login/"
+# The form's field names change between versions (username/password, email/pass), so match by role.
+USERNAME_FIELD = 'input[name="email"], input[name="username"], input[autocomplete^="username"]'
+PASSWORD_FIELD = 'input[type="password"]'
+LOGIN_ERRORS = (
+    "password was incorrect", "password you've entered is incorrect", "incorrect password",
+    "doesn't belong to an account", "isn't connected to an account", "couldn't find your account",
+)
+
+
+async def log_in(page: Page, username: str, password: str, timeout: float = 60.0) -> str:
+    """Log in through Instagram's login form.
+
+    Returns "ok", "wrong_credentials", "challenge" (Instagram wants a
+    security code sent by email or SMS) or "failed".
+    """
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_selector(USERNAME_FIELD, timeout=15000)
+    except Exception:  # noqa: BLE001 — no form: maybe already logged in
+        return "ok" if await is_logged_in(page) else "failed"
+    for label in ("Allow all cookies", "Decline optional cookies"):
+        button = page.get_by_role("button", name=label)
+        if await button.count():
+            await button.first.click()
+            break
+    await page.fill(USERNAME_FIELD, username)
+    await _human_delay(0.3, 0.8)
+    await page.fill(PASSWORD_FIELD, password)
+    await _human_delay(0.3, 0.8)
+    await page.press(PASSWORD_FIELD, "Enter")
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        await asyncio.sleep(2)
+        url = page.url.lower()
+        if "/challenge" in url or "two_factor" in url:
+            return "challenge"
+        try:
+            body = (await page.inner_text("body")).lower()
+        except Exception:  # noqa: BLE001 — page mid-navigation
+            continue
+        if any(err in body for err in LOGIN_ERRORS):
+            return "wrong_credentials"
+        if await wait_for_login(page, timeout=1):
+            return "ok"
+    return "failed"
 
 
 def reel_code_from_url(url: str) -> str | None:
@@ -267,3 +344,54 @@ async def follow_active_creator(page: Page, username: str) -> bool:
     await asyncio.sleep(1.2)
     after = (await active_reel(page)).get("follow") or {}
     return after.get("text") != "Follow"
+
+
+# ── Profile Pages ─────────────────────────────────────────────────────
+
+PROFILE_JS = """
+() => {
+    const unavailable = /Sorry, this page isn't available|Profile isn't available/i.test(document.body.innerText || '');
+    const header = document.querySelector('header');
+    if (!header) return { unavailable, found: false };
+    const follow = Array.from(header.querySelectorAll('button, [role="button"], div'))
+        .filter(e => ['Follow', 'Follow Back', 'Following', 'Requested'].includes((e.innerText || '').trim()))
+        .pop();  // deepest match
+    const box = follow ? follow.getBoundingClientRect() : null;
+    const followers = ((header.innerText || '').match(/([\\d.,]+[KMB]?) followers/) || [])[1] || null;
+    return {
+        unavailable, found: true, followers,
+        verified: !!header.querySelector('svg[aria-label="Verified"]'),
+        follow: follow ? {
+            text: follow.innerText.trim(), x: box.left + box.width / 2, y: box.top + box.height / 2,
+            visible: box.bottom > 0 && box.top < window.innerHeight,
+        } : null,
+    };
+}
+"""
+
+
+async def open_profile(page: Page, handle: str) -> dict:
+    """Open instagram.com/<handle>/ and describe it: found, verified, followers, follow button."""
+    await page.goto(f"https://www.instagram.com/{handle}/", wait_until="domcontentloaded")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10
+    state: dict = {}
+    while loop.time() < deadline:
+        state = await page.evaluate(PROFILE_JS)
+        if state.get("unavailable") or (state.get("found") and state.get("follow")):
+            break
+        await asyncio.sleep(0.5)
+    return state
+
+
+async def follow_open_profile(page: Page) -> bool:
+    """Follow the account whose profile is open; True once it shows Following / Requested."""
+    follow = (await page.evaluate(PROFILE_JS)).get("follow")
+    if not follow or not follow.get("visible"):
+        return False
+    if follow["text"] in ("Following", "Requested"):
+        return True
+    await _click(page, follow)
+    await asyncio.sleep(1.5)
+    after = (await page.evaluate(PROFILE_JS)).get("follow") or {}
+    return after.get("text") in ("Following", "Requested")

@@ -10,3 +10,4 @@ reels.db-*
 .DS_Store
 debug/
 .backup/
+browser_profiles/

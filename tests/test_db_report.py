@@ -5,7 +5,9 @@ import unittest
 
 from config import CURATION_TARGET_SHARE, CURATION_WINDOW
 from dashboard.report import curation_verdict, on_target, render, window_stats
-from database.db import init_db, load_creator_history, log_impression, update_impression_score
+from database.db import (
+    choose_account, init_db, load_creator_history, log_impression, update_impression_score,
+)
 
 
 def _db(test: unittest.TestCase) -> sqlite3.Connection:
@@ -15,9 +17,9 @@ def _db(test: unittest.TestCase) -> sqlite3.Connection:
     return conn
 
 
-def _session(conn, scorer="v1", dry_run=0) -> int:
-    cur = conn.execute("INSERT INTO sessions (account, dry_run, model, scorer) VALUES ('acct', ?, 'm', ?)",
-                       (dry_run, scorer))
+def _session(conn, scorer="v1", dry_run=0, account="acct") -> int:
+    cur = conn.execute("INSERT INTO sessions (account, dry_run, model, scorer) VALUES (?, ?, 'm', ?)",
+                       (account, dry_run, scorer))
     conn.commit()
     return cur.lastrowid
 
@@ -51,16 +53,37 @@ class ImpressionTests(unittest.TestCase):
         self.assertEqual(rows, {"LATE": 0.8, "DONE": 0.9})
         self.assertEqual(update_impression_score(sid, "LATE", {"value_score": 0.2}, conn), 0)  # only once
 
-    def test_creator_history_is_per_scorer(self):
+    def test_creator_history_is_per_scorer_and_account(self):
         conn = _db(self)
         old, new = _session(conn, scorer="old"), _session(conn, scorer="new")
+        other = _session(conn, scorer="new", account="test_acct")
         _reel(conn, old, 1, score=0.9, creator="a", code="X")
         _reel(conn, new, 1, score=0.2, creator="b", code="Y")
         _reel(conn, new, 2, score=0.4, creator="b", code="Y")  # same reel shown twice → best score
         _reel(conn, new, 3, basis="keyword_gate", creator="c", code="Z", followed=1)
-        scores, followed = load_creator_history("new", conn)
+        _reel(conn, other, 1, score=0.95, creator="d", code="W", followed=1)
+        scores, followed = load_creator_history("new", "acct", conn)
         self.assertEqual(scores, [("b", "Y", 0.4)])
         self.assertEqual(followed, {"c"})
+        self.assertEqual(load_creator_history("new", "test_acct", conn), ([("d", "W", 0.95)], {"d"}))
+
+
+class ChooseAccountTests(unittest.TestCase):
+    accounts = [{"username": "main", "status": "ACTIVE"}, {"username": "test1", "status": "ACTIVE"},
+                {"username": "old", "status": "BANNED"}]
+
+    def test_explicit_choice(self):
+        self.assertEqual(choose_account(self.accounts, "test1"), ("test1", None))
+        self.assertEqual(choose_account(self.accounts, "@main"), ("main", None))
+        self.assertIsNone(choose_account(self.accounts, "old")[0])
+        self.assertIn("Unknown account @nope", choose_account(self.accounts, "nope")[1])
+
+    def test_never_picks_between_several_on_its_own(self):
+        username, problem = choose_account(self.accounts, None)
+        self.assertIsNone(username)
+        self.assertIn("--account", problem)
+        self.assertEqual(choose_account(self.accounts[:1], None), ("main", None))
+        self.assertIn("No ACTIVE accounts", choose_account([], None)[1])
 
 
 class ReportMetricTests(unittest.TestCase):
@@ -118,6 +141,21 @@ class ReportMetricTests(unittest.TestCase):
         self.assertIn("Gate audit: 1 gated reels scored anyway — 1 were informative", text)
         self.assertIn("@good  “Government launched three websites for Gen Z.”", text)
         self.assertIn("https://www.instagram.com/reels/G1/", text)
+
+    def test_render_is_per_account(self):
+        conn = _db(self)
+        main = _session(conn, account="main")
+        _reel(conn, main, 1, score=0.9, creator="main_creator", code="M1", summary="main account reel")
+        test = _session(conn, account="test1")
+        _reel(conn, test, 1, score=0.1, creator="test_creator", code="T1")
+        latest = render(conn)
+        self.assertIn("curation report for @test1", latest)
+        self.assertIn("Other accounts (see --account): @main (1 sessions)", latest)
+        self.assertNotIn("main account reel", latest)
+        chosen = render(conn, account="main")
+        self.assertIn("curation report for @main", chosen)
+        self.assertIn("main account reel", chosen)
+        self.assertIn("No sessions for @ghost", render(conn, account="ghost"))
 
     def test_render_ignores_older_scorer(self):
         conn = _db(self)

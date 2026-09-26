@@ -16,6 +16,9 @@ import os
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reels.db")
 
+# Sessions run with --observe are scored afterwards by review (tools/review.py), not by the LLM.
+REVIEW_SCORER = "review"
+
 IMPRESSION_COLUMNS = (
     "session_id", "seq", "code", "url", "creator", "caption", "hashtags",
     "audio_type", "audio_title", "duration", "like_count", "comment_count",
@@ -123,36 +126,47 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         print("✅  Database initialised — reels.db is ready.")
 
 
-def get_next_available_account() -> dict | None:
-    """Return the next ACTIVE account, or None if no account is available."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT username, password, status
-        FROM accounts
-        WHERE status = 'ACTIVE'
-        ORDER BY last_used_timestamp ASC NULLS FIRST
-        LIMIT 1
-        """
-    )
-    row = cursor.fetchone()
-
-    if row is None:
+def list_accounts(conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Every account: username, status and when it was last used."""
+    own = conn is None
+    conn = conn or get_connection()
+    rows = conn.execute(
+        "SELECT username, status, last_used_timestamp FROM accounts ORDER BY username"
+    ).fetchall()
+    if own:
         conn.close()
-        return None
+    return [{"username": u, "status": s, "last_used": t} for u, s, t in rows]
 
-    username, password, status = row
 
-    cursor.execute(
-        "UPDATE accounts SET last_used_timestamp = datetime('now') WHERE username = ?",
-        (username,),
+def choose_account(accounts: list[dict], requested: str | None) -> tuple[str | None, str | None]:
+    """(username, None) for the one account a run should use, or (None, why not).
+
+    Runs never pick between several accounts on their own: with more than one
+    ACTIVE account, the account must be named explicitly.
+    """
+    add_hint = "Add it to accounts.json and run `python -m database.seed`."
+    if requested:
+        account = next((a for a in accounts if a["username"] == requested.lstrip("@")), None)
+        if account is None:
+            return None, f"Unknown account @{requested.lstrip('@')}. {add_hint}"
+        if account["status"] != "ACTIVE":
+            return None, f"@{account['username']} is {account['status']}, not ACTIVE."
+        return account["username"], None
+    active = [a["username"] for a in accounts if a["status"] == "ACTIVE"]
+    if len(active) == 1:
+        return active[0], None
+    if not active:
+        return None, f"No ACTIVE accounts. {add_hint}"
+    return None, "Several accounts — pick one with --account: " + ", ".join(f"@{u}" for u in active)
+
+
+def mark_account_used(username: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE accounts SET last_used_timestamp = datetime('now') WHERE username = ?", (username,)
     )
     conn.commit()
     conn.close()
-
-    return {"username": username, "password": password, "status": status}
 
 
 def update_account_status(username: str, new_status: str) -> None:
@@ -253,22 +267,28 @@ def update_impression_score(
 
 
 def load_creator_history(
-    scorer: str, conn: sqlite3.Connection | None = None
+    scorer: str, account: str, conn: sqlite3.Connection | None = None
 ) -> tuple[list[tuple[str, str, float]], set[str]]:
-    """(creator, code, best score) rows scored under `scorer`, and all creators ever followed."""
+    """For one account: (creator, code, best score) rows scored under `scorer`, and creators it followed."""
     own = conn is None
     conn = conn or get_connection()
     scores = conn.execute(
         """
         SELECT i.creator, i.code, MAX(i.value_score)
         FROM impressions i JOIN sessions s ON s.id = i.session_id
-        WHERE s.scorer = ? AND i.score_basis = 'score'
+        WHERE s.scorer = ? AND s.account = ? AND i.score_basis = 'score'
           AND i.value_score IS NOT NULL AND COALESCE(i.creator, '') != ''
         GROUP BY i.creator, i.code
         """,
-        (scorer,),
+        (scorer, account),
     ).fetchall()
-    followed = {r[0] for r in conn.execute("SELECT DISTINCT creator FROM impressions WHERE followed = 1")}
+    followed = {r[0] for r in conn.execute(
+        """
+        SELECT DISTINCT i.creator FROM impressions i JOIN sessions s ON s.id = i.session_id
+        WHERE i.followed = 1 AND s.account = ?
+        """,
+        (account,),
+    )}
     if own:
         conn.close()
     return scores, followed

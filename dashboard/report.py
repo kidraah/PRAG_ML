@@ -9,10 +9,12 @@ Answers "is the account curated yet?" from the impressions log:
   • what decided each reel, and an audit of the keyword / creator gates
   • top topics, best creators, and the latest valuable reels to eyeball
 
-Only reels scored with the current prompt (INTERESTS included) and model
-are compared; change either and the trend starts over.
+Each account has its own feed, so the report covers one account (by
+default the one used most recently). Only reels scored with the current
+prompt (INTERESTS included) and model are compared; change either and the
+trend starts over.
 
-    python -m dashboard.report [--window 50] [--recent 8]
+    python -m dashboard.report [--account NAME] [--window 50] [--recent 8]
 """
 
 import argparse
@@ -30,6 +32,7 @@ SELECT i.session_id, i.seq, i.code, i.url, i.creator, i.is_ad, i.score_basis, i.
        i.topic, i.summary, i.decision, i.decision_basis, i.explored, i.dwell_seconds,
        i.gate_audit, i.score_seconds, i.liked, i.saved, i.followed, s.scorer
 FROM impressions i JOIN sessions s ON s.id = i.session_id
+WHERE s.account = ?
 ORDER BY i.session_id, i.seq
 """
 
@@ -40,6 +43,7 @@ SELECT s.id, strftime('%Y-%m-%d %H:%M', s.started_at, 'localtime') AS started,
        COALESCE(SUM(i.liked), 0) AS liked, COALESCE(SUM(i.saved), 0) AS saved,
        COALESCE(SUM(i.followed), 0) AS followed
 FROM sessions s LEFT JOIN impressions i ON i.session_id = s.id
+WHERE s.account = ?
 GROUP BY s.id ORDER BY s.id
 """
 
@@ -47,8 +51,8 @@ GROUP BY s.id ORDER BY s.id
 # ── Metrics (pure) ────────────────────────────────────────────────────
 
 def on_target(row) -> bool | None:
-    """Whether a reel counts as informative; None if it can't be judged (ad, unscored, LLM error)."""
-    if row["is_ad"] or row["score_basis"] in (None, "ad", "llm_error"):
+    """Whether a reel counts as informative; None if not judged (ad, unscored, LLM error, awaiting review)."""
+    if row["is_ad"] or row["score_basis"] in (None, "ad", "llm_error", "observed"):
         return None
     if row["score_basis"] in ("keyword_gate", "creator_prior"):
         return False  # skipped by a gate: presumed off-target (the gate audit checks this)
@@ -92,23 +96,36 @@ def _median(values: list[float]) -> float | None:
 
 # ── Rendering ─────────────────────────────────────────────────────────
 
-def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8) -> str:
+def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account: str | None = None) -> str:
     conn.row_factory = sqlite3.Row
-    sessions = conn.execute(SESSIONS_SQL).fetchall()
-    if not sessions:
+    accounts = conn.execute(
+        "SELECT account, COUNT(*) AS n, MAX(id) AS last FROM sessions GROUP BY account ORDER BY last DESC"
+    ).fetchall()
+    if not accounts:
         return "No sessions yet — run `python main.py` first."
-    all_rows = conn.execute(ROWS_SQL).fetchall()
+    account = (account or accounts[0]["account"]).lstrip("@")
+    sessions = conn.execute(SESSIONS_SQL, (account,)).fetchall()
+    if not sessions:
+        return f"No sessions for @{account} yet."
+    all_rows = conn.execute(ROWS_SQL, (account,)).fetchall()
     scorer = sessions[-1]["scorer"]
     rows = [r for r in all_rows if r["scorer"] == scorer]
     organic = [r for r in rows if not r["is_ad"]]
     judged = [r for r in rows if on_target(r) is not None]
 
-    out = ["FeedLab — curation report", "═" * 60]
+    out = [f"FeedLab — curation report for @{account}", "═" * 60]
+    others = [f"@{a['account']} ({a['n']} sessions)" for a in accounts if a["account"] != account]
+    if others:
+        out.append("Other accounts (see --account): " + ", ".join(others))
     older = len(all_rows) - len(rows)
     out.append(
         f"Scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · {len(judged)} judged"
         + (f"  ({older} reels scored with an older prompt/INTERESTS/model not compared)" if older else "")
     )
+
+    awaiting = sum(r["score_basis"] == "observed" for r in rows)
+    if awaiting:
+        out.append(f"{awaiting} recorded reels await review → python -m tools.review export --account {account}")
 
     out += ["", "Sessions",
             f"  {'id':>3}  {'started (local)':16}  {'min':>5}  {'reels':>5}  {'ads':>4}  {'judged':>6}  "
@@ -145,7 +162,7 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8) -> str:
 
     out += ["", "Watch time by decision (median seconds on screen)"]
     parts = []
-    for action in ("SKIP", "WATCH", "FULL_WATCH", "REWATCH"):
+    for action in ("SKIP", "WATCH", "FULL_WATCH", "REWATCH", "OBSERVE"):
         dwell = [r["dwell_seconds"] for r in organic if r["decision"] == action and r["dwell_seconds"] is not None]
         if dwell:
             parts.append(f"{action} {_median(dwell):.1f}s (n={len(dwell)})")
@@ -202,13 +219,14 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Is the FeedLab account curated yet?")
+    parser.add_argument("--account", help="Account to report on (default: the one used most recently)")
     parser.add_argument("--window", type=int, default=50, help="Reels per trend window")
     parser.add_argument("--recent", type=int, default=8, help="How many recent valuable reels to list")
     parser.add_argument("--db", default=DB_PATH, help="Path to reels.db")
     args = parser.parse_args()
     conn = get_connection(args.db)
     try:
-        print(render(conn, window=args.window, recent=args.recent))
+        print(render(conn, window=args.window, recent=args.recent, account=args.account))
     finally:
         conn.close()
 
