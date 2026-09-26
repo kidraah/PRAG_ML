@@ -145,7 +145,7 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8) -> str:
 
     out += ["", "Watch time by decision (median seconds on screen)"]
     parts = []
-    for action in ("SKIP", "WATCH", "FULL_WATCH"):
+    for action in ("SKIP", "WATCH", "FULL_WATCH", "REWATCH"):
         dwell = [r["dwell_seconds"] for r in organic if r["decision"] == action and r["dwell_seconds"] is not None]
         if dwell:
             parts.append(f"{action} {_median(dwell):.1f}s (n={len(dwell)})")

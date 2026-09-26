@@ -72,8 +72,21 @@ OCR_MIN_CONFIDENCE = 0.3
 # ── Engagement policy (value_score is 0-1) ────────────────────────────
 
 WATCH_THRESHOLD = 0.40                 # below: skip
-LIKE_THRESHOLD = 0.75                  # at or above: watch fully and like
-SAVE_THRESHOLD = 0.85                  # at or above: also save
+LIKE_THRESHOLD = 0.75                  # at or above: watch fully, maybe like
+SAVE_THRESHOLD = 0.85                  # at or above: maybe also save
+
+# People like only some of what they enjoy, so a like / save is a chance
+# that rises with the score (at its threshold, at a perfect 1.0), and
+# both are capped per session.
+LIKE_PROBABILITY = (0.35, 0.85)
+SAVE_PROBABILITY = (0.30, 0.70)
+MAX_LIKES_PER_SESSION = 20
+MAX_SAVES_PER_SESSION = 5
+
+REWATCH_THRESHOLD = 0.85               # the very best reels...
+REWATCH_PROBABILITY = 0.5              # ...are played through again this often (the player loops them)
+REWATCH_FACTOR = (1.3, 2.0)            # dwell as a multiple of the reel's duration
+REWATCH_MAX_SECONDS = 120
 
 SKIP_DWELL = (1.2, 3.0)                # seconds on screen before skipping
 AD_DWELL = (1.0, 2.5)

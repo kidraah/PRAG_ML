@@ -104,7 +104,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
             gate_audit          INTEGER NOT NULL DEFAULT 0,   -- gated, but scored anyway to audit the gate
             score_seconds       REAL,     -- time spent scoring (download + Whisper/OCR + LLM)
             scored_at           TEXT,
-            decision            TEXT,     -- SKIP | WATCH | FULL_WATCH
+            decision            TEXT,     -- SKIP | WATCH | FULL_WATCH | REWATCH
             decision_basis      TEXT,     -- what the decision rested on (timeout = score arrived too late)
             explored            INTEGER NOT NULL DEFAULT 0,
             dwell_seconds       REAL,

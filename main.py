@@ -4,10 +4,10 @@ FeedLab — Curation Agent (P.R.A.G.: Predictive Reel Accumulation & Grouping)
 Phase 1: curate the account. The agent scrolls Instagram Reels on a
 dedicated account and engages the way a person with config.INTERESTS
 would — skipping fast, watching what's informative, watching valuable
-reels through and liking / saving them, following creators who keep
-delivering — so the account's feed converges on valuable content. Every
-reel shown is logged; `python -m dashboard.report` says whether the feed
-is curated yet.
+reels through (the best of them twice) and liking / saving some of them,
+following creators who keep delivering — so the account's feed converges
+on valuable content. Every reel shown is logged; `python -m
+dashboard.report` says whether the feed is curated yet.
 
     python main.py [--minutes 40] [--max-reels N] [--dry-run]
 
@@ -52,6 +52,8 @@ from config import (
     LLM_MODEL_NAME,
     MAX_DECISION_WAIT,
     MAX_FOLLOWS_PER_SESSION,
+    MAX_LIKES_PER_SESSION,
+    MAX_SAVES_PER_SESSION,
     SESSION_MINUTES,
     WATCH_THRESHOLD,
 )
@@ -225,7 +227,7 @@ async def run(args: argparse.Namespace) -> None:
     pipeline: ScoringPipeline | None = None
     worker: asyncio.Task | None = None
     started = time.monotonic()
-    seq = follows = 0
+    seq = likes = saves = follows = 0
     tally: Counter = Counter()
 
     try:
@@ -303,15 +305,20 @@ async def run(args: argparse.Namespace) -> None:
                 has_liked=bool(meta and meta.has_liked),
                 has_saved=bool(meta and meta.has_saved),
                 follow_ok=follow_ok,
+                likes_left=MAX_LIKES_PER_SESSION - likes,
+                saves_left=MAX_SAVES_PER_SESSION - saves,
                 rng=rng,
             )
 
             done = await execute_decision(page, decision, meta, shown_at, dry_run=args.dry_run, rng=rng)
+            # Session caps count what was done — in a dry run, what would have been.
+            likes += decision.like if args.dry_run else done.liked
+            saves += decision.save if args.dry_run else done.saved
+            follows += decision.follow if args.dry_run else done.followed
             if meta is not None:
                 meta.has_liked = meta.has_liked or done.liked
                 meta.has_saved = meta.has_saved or done.saved
                 if done.followed:
-                    follows += 1
                     meta.creator_following = True
                     creators.mark_following(meta.creator)
             dwell = time.monotonic() - shown_at
@@ -361,7 +368,7 @@ async def run(args: argparse.Namespace) -> None:
     print(f"    informative: {tally['informative']} of {scored} scored ({share}) · valuable: {tally['valuable']}")
     print(
         f"    decisions: SKIP {tally['SKIP']} · WATCH {tally['WATCH']} · FULL_WATCH {tally['FULL_WATCH']}"
-        f" · decided before a score arrived: {tally['timeout']}"
+        f" · REWATCH {tally['REWATCH']} · decided before a score arrived: {tally['timeout']}"
     )
     if not args.dry_run:
         print(f"    engagement: ❤️ {tally['liked']} · 🔖 {tally['saved']} · ➕ {tally['followed']}")
