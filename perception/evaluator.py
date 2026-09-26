@@ -18,7 +18,7 @@ import time
 import requests
 from google import genai
 
-from config import LM_STUDIO_URL, LLM_MODEL_NAME, TARGET_BIAS
+from config import LM_STUDIO_URL, LLM_MODEL_NAME, INTERESTS as TARGET_BIAS
 
 
 # ── Gemini Client ────────────────────────────────────────────────────

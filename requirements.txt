@@ -1,7 +1,13 @@
 playwright
 playwright-stealth
 mlx-whisper
-ffmpeg-python
+easyocr
 aiohttp
-pandas
 python-dotenv
+
+# Also needed:
+#   ffmpeg        brew install ffmpeg   (mlx-whisper decodes audio with it)
+#   LM Studio     serving config.LLM_MODEL_NAME (main.py starts it via the lms CLI if it's installed)
+# Legacy modules not used by main.py need more:
+#   google-genai requests (perception/evaluator.py), yt-dlp (perception/scraper.py),
+#   Appium-Python-Client (automation/appium_driver.py)

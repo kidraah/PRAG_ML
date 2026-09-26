@@ -1,25 +1,34 @@
 """
-FeedLab — OCR Text Extractor
+FeedLab — Cover Text OCR (EasyOCR)
 
-Uses EasyOCR to pull English text from a single image / video frame.
+Reads the text burned into a reel's cover image. News reels usually put
+the headline there, and for reels set to a music track it is often the
+only real information besides the caption.
+
+EasyOCR (torch) runs on the CPU; callers keep it on its own thread.
 """
 
-import easyocr
+import warnings
 
-# Initialise the reader once (model download happens on first run)
-_reader: easyocr.Reader | None = None
+from config import OCR_LANGUAGES, OCR_MIN_CONFIDENCE
+
+_reader = None
 
 
-def _get_reader() -> easyocr.Reader:
-    """Lazily initialise and cache the EasyOCR reader."""
+def _get_reader():
+    """Lazily initialise and cache the EasyOCR reader (downloads models on first run)."""
     global _reader
     if _reader is None:
-        _reader = easyocr.Reader(["en"], gpu=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import easyocr
+
+            _reader = easyocr.Reader(OCR_LANGUAGES, gpu=False, verbose=False)
     return _reader
 
 
 def extract_text_from_frame(image_path: str) -> str:
-    """Run OCR on an image and return all detected text as a single string.
+    """Run OCR on an image and return the confidently detected text as one string.
 
     Parameters
     ----------
@@ -29,11 +38,17 @@ def extract_text_from_frame(image_path: str) -> str:
     Returns
     -------
     str
-        Space-joined English text detected in the image.
+        Space-joined text (Hindi and English) detected in the image.
     """
-    reader = _get_reader()
-    results = reader.readtext(image_path, detail=0)
-    return " ".join(results).strip()
+    results = _get_reader().readtext(image_path, detail=1)
+    return " ".join(text for _box, text, conf in results if conf >= OCR_MIN_CONFIDENCE).strip()
+
+
+def warm_up() -> None:
+    """Load the OCR models before the first reel needs them."""
+    import numpy as np
+
+    _get_reader().readtext(np.zeros((64, 64, 3), dtype=np.uint8))
 
 
 if __name__ == "__main__":

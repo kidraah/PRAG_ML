@@ -1,149 +1,259 @@
 """
-FeedLab — P.R.A.G. Local Fast Async Orchestration Loop
-(Predictive Reel Accumulation & Grouping)
+FeedLab — Curation Agent (P.R.A.G.: Predictive Reel Accumulation & Grouping)
 
-1. Initializes SQLite database & launches persistent async Chromium browser.
-2. Navigates to Instagram Reels.
-3. Continuous async event loop:
-   a. Intercepts/records active reel video and extracts DOM metadata.
-   b. Spawns background perception task (ffmpeg audio -> mlx-whisper -> local LM Studio).
-   c. Plays video naturally in foreground (mimicking human viewing).
-   d. Awaits background evaluation result and computes bandit policy.
-   e. Executes action (Like/Watch/Skip) with elapsed time compensation.
-   f. Logs to SQLite, cleans up temporary files, and scrolls to next reel.
+Phase 1: curate the account. The agent scrolls Instagram Reels on a
+dedicated account and engages the way a person with config.INTERESTS
+would — skipping fast, watching what's informative, watching valuable
+reels through and liking / saving them, following creators who keep
+delivering — so the account's feed converges on valuable content. Every
+reel shown is logged; `python -m dashboard.report` says whether the feed
+is curated yet.
+
+    python main.py [--minutes 40] [--max-reels N] [--dry-run]
+
+1. Starts LM Studio if needed and warms up Whisper, OCR and the LLM, then
+   opens instagram.com/reels in the persistent browser profile.
+2. FeedCatalog captures each reel's JSON as it arrives; ScoringPipeline
+   scores it in the background, usually before it reaches the screen.
+3. For the reel on screen: wait briefly for its score, decide, act, log,
+   scroll.
 """
 
+import argparse
 import asyncio
-import os
+import datetime
 import random
+import subprocess
 import time
 import traceback
+from collections import Counter
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from config import TARGET_BIAS
+from agent.bandit import Decision, decide
+from agent.creators import CreatorMemory
+from agent.pipeline import ScoreResult, ScoringPipeline
+from automation.browser_driver import (
+    close_browser,
+    follow_active_creator,
+    init_browser,
+    is_logged_in,
+    like_active_reel,
+    open_reels,
+    save_active_reel,
+    scroll_next,
+    wait_for_first_reel,
+)
+from automation.feed_capture import FeedCatalog, ReelMeta
+from config import (
+    LIKE_THRESHOLD,
+    LLM_MODEL_NAME,
+    MAX_DECISION_WAIT,
+    MAX_FOLLOWS_PER_SESSION,
+    SESSION_MINUTES,
+    WATCH_THRESHOLD,
+)
 from database.db import (
+    end_session,
     get_next_available_account,
     init_db,
-    log_reel_event_async,
+    load_creator_history,
+    log_impression,
     reset_cooldown_accounts,
+    start_session,
+    update_impression_score,
 )
-from perception.heuristics import fast_heuristic_check
-from perception.local_evaluator import (
-    extract_audio,
-    transcribe_audio,
-    evaluate_alignment_async,
-    cleanup_audio_file,
-)
-from agent.bandit import decide_timing_and_action
-from automation.browser_driver import (
-    init_browser,
-    close_browser,
-    open_reels,
-    get_current_reel_url,
-    scroll_next,
-    fast_skip,
-    like_reel,
-    capture_active_reel_and_metadata,
-    cleanup_temp_file,
-    is_logged_in,
-    TEMP_VIDEO,
-)
+from perception.local_evaluator import ScoringError, ensure_llm_ready, scorer_version
 
-TEMP_AUDIO = "temp_audio.mp3"
-MAX_CONSECUTIVE_ERRORS = 5
+MAX_STUCK_SCROLLS = 3
 
 
-# ── Background Perception Pipeline ────────────────────────────────────
+class FeedStuck(Exception):
+    """The feed stopped advancing."""
 
-async def run_perception_pipeline(video_path: str, caption: str) -> tuple[dict, str]:
-    """Execute local audio extraction, transcription, and scoring in background.
 
-    Runs CPU/GPU-bound tasks (ffmpeg, mlx-whisper) in worker threads and
-    network I/O (LM Studio) natively asynchronously.
-    """
-    # 1. Extract audio track via ffmpeg (~50ms)
-    audio_path = await asyncio.to_thread(extract_audio, video_path, TEMP_AUDIO)
-
-    # 2. Transcribe speech using mlx-whisper on Apple Silicon
-    transcript = ""
-    if audio_path:
-        transcript = await asyncio.to_thread(transcribe_audio, audio_path)
-
-    # 3. Score alignment with local text LLM via aiohttp
-    eval_result = await evaluate_alignment_async(
-        transcript=transcript,
-        caption=caption,
-        target_bias=TARGET_BIAS,
-    )
-
-    return eval_result, transcript
+@dataclass
+class Performed:
+    liked: bool = False
+    saved: bool = False
+    followed: bool = False
 
 
 # ── Action Executor ───────────────────────────────────────────────────
 
-async def execute_action_async(
-    page,
-    action: str,
-    target_watch_seconds: float,
-    reel_start_time: float,
-) -> None:
-    """Execute the bandit's chosen action with elapsed time compensation.
+async def _sleep_until(deadline: float) -> None:
+    delay = deadline - time.monotonic()
+    if delay > 0:
+        await asyncio.sleep(delay)
 
-    Factors in the time already spent on this reel during in-browser recording
-    and async evaluation, so total dwell time reflects the policy target
-    plus natural human variability.
+
+async def execute_decision(
+    page, decision: Decision, meta: ReelMeta | None, shown_at: float, *, dry_run: bool, rng: random.Random
+) -> Performed:
+    """Carry out a decision on the reel on screen, keeping total dwell on target.
+
+    Engagement happens part-way through the watch, like a person reacting
+    to what they're seeing. In a dry run nothing is clicked (watch time
+    still happens, so the feed still learns from it).
     """
-    try:
-        elapsed = time.time() - reel_start_time
-
-        # If policy dictates liking, trigger like now while the video is playing
-        if action == "LIKE_AND_WATCH":
-            await like_reel(page)
-
-        # Calculate remaining watch time needed to reach the target duration
-        remaining_watch = max(0.0, target_watch_seconds - elapsed)
-        extra_human_delay = random.uniform(0.5, 1.5)
-        total_wait = remaining_watch + extra_human_delay
-
-        print(f"  ⏱  Watch time: {elapsed + total_wait:.1f}s total (analyzed in {elapsed:.1f}s, waiting remaining {total_wait:.1f}s) …")
-        await asyncio.sleep(total_wait)
-
-    except Exception as exc:
-        print(f"  ⚠️  Action '{action}' failed: {exc}")
+    done = Performed()
+    if (decision.like or decision.save or decision.follow) and not dry_run:
+        await _sleep_until(shown_at + decision.dwell * rng.uniform(0.35, 0.75))
+        if decision.like:
+            done.liked = await like_active_reel(page)
+        if decision.save:
+            await asyncio.sleep(rng.uniform(0.6, 1.6))
+            done.saved = await save_active_reel(page)
+        if decision.follow and meta is not None:
+            await asyncio.sleep(rng.uniform(0.6, 1.6))
+            done.followed = await follow_active_creator(page, meta.creator)
+    await _sleep_until(shown_at + decision.dwell)
+    return done
 
 
-# ── Main Async Loop ───────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────
 
-async def main_async() -> None:
-    """Run the FeedLab local async P.R.A.G. agent."""
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def impression_row(
+    session_id: int, seq: int, code: str | None, meta: ReelMeta | None, state: dict, is_ad: bool,
+    result: ScoreResult | None, decision: Decision, dwell: float, done: Performed,
+) -> dict:
+    row = {
+        "session_id": session_id,
+        "seq": seq,
+        "code": code,
+        "url": meta.url if meta else None,
+        "creator": meta.creator if meta else state.get("creator"),
+        "is_ad": int(is_ad),
+        "decision": decision.action,
+        "decision_basis": decision.basis,
+        "explored": int(decision.explored),
+        "dwell_seconds": round(dwell, 2),
+        "planned": decision.planned,
+        "liked": int(done.liked),
+        "saved": int(done.saved),
+        "followed": int(done.followed),
+    }
+    if meta is not None:
+        row.update(
+            caption=meta.caption,
+            hashtags=" ".join(meta.hashtags),
+            audio_type=meta.audio_type,
+            audio_title=meta.audio_title,
+            duration=meta.duration,
+            like_count=meta.like_count,
+            comment_count=meta.comment_count,
+            repost_count=meta.repost_count,
+            taken_at=meta.taken_at,
+            inventory_source=meta.inventory_source,
+        )
+    if is_ad:
+        row.update(score_basis="ad", scored_at=_utc_now())
+    elif result is not None:
+        row.update(result.score_fields(), scored_at=_utc_now())
+    return row
+
+
+def describe(
+    seq: int, meta: ReelMeta | None, state: dict, is_ad: bool, result: ScoreResult | None,
+    decision: Decision, dwell: float, done: Performed, dry_run: bool,
+) -> str:
+    """One console line per reel."""
+    if is_ad:
+        who = "(ad)"
+    elif meta and meta.creator:
+        who = f"@{meta.creator}"
+    else:
+        who = f"@{state['creator']}" if state.get("creator") else "(unknown)"
+    kind = f"{meta.audio_type or '?'} {meta.duration:.0f}s" if meta and meta.duration else ""
+
+    if result and result.basis == "score":
+        verdict = f"{result.value_score:.2f} {result.topic}"
+    elif result and result.basis == "keyword_gate":
+        verdict = f"gate: {result.gate_keyword}"
+    elif result and result.basis == "creator_prior":
+        verdict = "creator: never valuable"
+    elif result and result.basis == "llm_error":
+        verdict = f"error: {result.error}"
+    else:
+        verdict = {"ad": "ad", "timeout": "not scored in time", "no_metadata": "no metadata"}.get(
+            decision.basis, decision.basis
+        )
+
+    marks = " ".join(m for m, on in (("❤️", done.liked), ("🔖", done.saved), ("➕", done.followed)) if on)
+    if dry_run and decision.planned:
+        marks = f"(would {decision.planned})"
+    if decision.explored:
+        marks = (marks + " 🧭").strip()
+    line = f"#{seq:<4} {who[:26]:26} {kind:12} {verdict[:36]:36} → {decision.action:10} {dwell:5.1f}s {marks}"
+    if result and result.summary and decision.action != "SKIP":
+        line += f"\n        “{result.summary[:110]}”"
+    return line
+
+
+# ── Main Loop ─────────────────────────────────────────────────────────
+
+async def run(args: argparse.Namespace) -> None:
+    """One curation session."""
     init_db()
     reset_cooldown_accounts()
-
-    # ── Step 1: Get account for DB tracking ──
     account = get_next_available_account()
     if account is None:
-        print("⚠️  No ACTIVE accounts available. Exiting.")
+        print("⚠️  No ACTIVE accounts available. Add one with `python -m database.seed`.")
         return
-
     username = account["username"]
-    print(f"\n🚀  FeedLab Local Async Agent — Starting (tracking @{username})\n")
 
-    # ── Step 2: Launch browser ──
     try:
-        context, page = await init_browser()
-    except Exception as exc:
-        print(f"❌  Browser launch failed: {exc}")
+        await asyncio.to_thread(ensure_llm_ready)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"❌  {exc}")
         return
 
-    reel_count = 0
+    scorer = scorer_version()
+    creators = CreatorMemory.from_history(*load_creator_history(scorer))
+    catalog = FeedCatalog()
+    rng = random.Random()
+    session_id = start_session(username, dry_run=args.dry_run, model=LLM_MODEL_NAME, scorer=scorer)
+    mode = "dry run — no likes, saves or follows" if args.dry_run else "live"
+    print(f"\n🚀  FeedLab curation — @{username}, session {session_id} ({mode}, {args.minutes} min)\n")
+
+    pipeline: ScoringPipeline | None = None
+    worker: asyncio.Task | None = None
+    started = time.monotonic()
+    seq = follows = 0
+    tally: Counter = Counter()
 
     try:
-        # ── Step 3: Navigate to Reels ──
-        await open_reels(page)
+        _context, page = await init_browser()
 
-        # ── Step 3b: Login check ──
+        def on_result(meta: ReelMeta, result: ScoreResult) -> None:
+            # Scores that arrive after their reel was logged (decided on timeout).
+            update_impression_score(session_id, meta.code, result.score_fields())
+
+        pipeline = ScoringPipeline(
+            catalog, creators, rng=rng,
+            user_agent=await page.evaluate("navigator.userAgent"),
+            on_result=on_result,
+        )
+        print("  🔥  Warming up Whisper, OCR and the LLM …")
+        warm_start = time.monotonic()
+        try:
+            await pipeline.warm_up()
+        except ScoringError as exc:
+            print(f"❌  LLM warm-up failed: {exc}")
+            return
+        print(f"  🔥  Ready in {time.monotonic() - warm_start:.0f}s")
+
+        catalog.on_new_feed_reel = pipeline.enqueue
+        catalog.attach(page)
+        worker = asyncio.create_task(pipeline.run())
+
+        await open_reels(page)
         if not await is_logged_in(page):
             print("\n" + "=" * 60)
             print("  🔐  Not logged in!")
@@ -152,132 +262,123 @@ async def main_async() -> None:
             print("=" * 60 + "\n")
             await asyncio.to_thread(input)
             await open_reels(page)
+        await catalog.ingest_embedded(page)
 
-        # ── Step 4: P.R.A.G. Loop ──
-        consecutive_errors = 0
+        state = await wait_for_first_reel(page)
+        if not state.get("src"):
+            print("❌  No reel started playing.")
+            return
 
-        print(f"\n{'═' * 60}")
-        print(f"  P.R.A.G. local async loop started for @{username}")
-        print(f"{'═' * 60}\n")
+        deadline = started + args.minutes * 60
+        while time.monotonic() < deadline and (args.max_reels is None or seq < args.max_reels):
+            seq += 1
+            shown_at = time.monotonic()
+            code = state.get("code")
+            meta = await catalog.wait_for(code, timeout=1.5)
+            is_ad = meta.is_ad if meta is not None else bool(state.get("sponsored"))
+            pipeline.set_current(code, None if is_ad else meta)
 
-        while True:
-            reel_count += 1
-            reel_start_time = time.time()
-            print(f"── Reel #{reel_count} ──")
+            result = None
+            if meta is not None and not is_ad:
+                result = await pipeline.wait_for(code, MAX_DECISION_WAIT - (time.monotonic() - shown_at))
 
-            try:
-                # ── Stage 1: Fast-Path Heuristic Gate ──
-                # Read DOM metadata quickly before heavy video recording
-                reel_data = await capture_active_reel_and_metadata(page)
-                
-                reel_url = reel_data["reel_url"]
-                caption = reel_data["caption"]
-                like_count = reel_data["like_count"]
-                comment_count = reel_data["comment_count"]
+            if is_ad:
+                basis = "ad"
+            elif meta is None:
+                basis = "no_metadata"
+            elif result is None:
+                basis = "timeout"
+            else:
+                basis = result.basis
+            value = result.value_score if result is not None else None
+            follow_ok = (
+                meta is not None and value is not None and value >= LIKE_THRESHOLD
+                and follows < MAX_FOLLOWS_PER_SESSION and not meta.creator_following
+                and creators.qualifies_for_follow(meta.creator)
+            )
+            decision = decide(
+                value_score=value,
+                basis=basis,
+                duration=meta.duration if meta else state.get("duration"),
+                has_liked=bool(meta and meta.has_liked),
+                has_saved=bool(meta and meta.has_saved),
+                follow_ok=follow_ok,
+                rng=rng,
+            )
 
-                print(f"  URL: {reel_url}")
-                print(f"  📊  Likes: {like_count:,}  Comments: {comment_count:,}")
-                if caption:
-                    print(f"  📝  Caption: {caption[:80]}…")
+            done = await execute_decision(page, decision, meta, shown_at, dry_run=args.dry_run, rng=rng)
+            if meta is not None:
+                meta.has_liked = meta.has_liked or done.liked
+                meta.has_saved = meta.has_saved or done.saved
+                if done.followed:
+                    follows += 1
+                    meta.creator_following = True
+                    creators.mark_following(meta.creator)
+            dwell = time.monotonic() - shown_at
 
-                heuristic_pass = fast_heuristic_check(caption)
-                if not heuristic_pass:
-                    print("  🛑  Heuristic Filter: Excluded keyword detected.")
-                    action, target_watch_seconds = decide_timing_and_action(0.0, heuristic_pass=False)
-                    await execute_action_async(page, action, target_watch_seconds, reel_start_time)
-                    await log_reel_event_async(
-                        reel_url=reel_url, caption=caption[:500], transcript="",
-                        alignment_score=0.0, like_count=like_count, comment_count=comment_count, action_taken=action
-                    )
-                    await fast_skip(page)
-                    continue
+            latest = pipeline.result(code)  # may have landed during the dwell
+            log_impression(impression_row(session_id, seq, code, meta, state, is_ad, latest, decision, dwell, done))
+            print(describe(seq, meta, state, is_ad, latest, decision, dwell, done, args.dry_run))
 
-                # ── Stage 2: Capture & Perception ──
-                if not reel_data["file_path"] or not os.path.exists(TEMP_VIDEO):
-                    print("  ⚠️  No video captured — skipping.")
-                    await scroll_next(page)
-                    continue
+            tally[decision.action] += 1
+            tally["timeout"] += decision.basis == "timeout"
+            tally["liked"] += done.liked
+            tally["saved"] += done.saved
+            tally["followed"] += done.followed
+            if latest is not None and latest.basis == "score":
+                tally["scored"] += 1
+                tally["informative"] += latest.value_score >= WATCH_THRESHOLD
+                tally["valuable"] += latest.value_score >= LIKE_THRESHOLD
 
-                # b. Spawn Background Perception Task
-                perception_task = asyncio.create_task(
-                    run_perception_pipeline(TEMP_VIDEO, caption)
-                )
-
-                # c. Foreground Baseline Watch (plays naturally on screen)
-                await asyncio.sleep(2.0)
-
-                # d. Await Background Perception Resolution
-                eval_result, transcript = await perception_task
-                score = eval_result.get("alignment_score", 0.0)
-                reasoning = eval_result.get("reasoning", "No reasoning.")
-
-                if transcript:
-                    print(f"  🎙  Transcript: \"{transcript[:90]}…\"")
-                print(f"  📈  Score: {score:.2f} — {reasoning}")
-
-                # ── Stage 3: Bandit Policy & Action ──
-                action, target_watch_seconds = decide_timing_and_action(score, heuristic_pass=True)
-                print(f"  🎯  Policy → {action} ({target_watch_seconds:.1f}s target)")
-
-                # f. Execute action with timing compensation
-                await execute_action_async(page, action, target_watch_seconds, reel_start_time)
-
-                # g. Log to Database asynchronously
-                await log_reel_event_async(
-                    reel_url=reel_url,
-                    caption=caption[:500],
-                    transcript=transcript[:2000],
-                    alignment_score=score,
-                    like_count=like_count,
-                    comment_count=comment_count,
-                    action_taken=action,
-                )
-
-                # h. Cleanup temporary files
-                cleanup_temp_file(TEMP_VIDEO)
-                cleanup_audio_file(TEMP_AUDIO)
-
-                # i. Scroll to next reel
-                await scroll_next(page)
-
-                consecutive_errors = 0
-
-            except Exception as exc:
-                consecutive_errors += 1
-                print(f"  ❌  Error ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {exc}")
-
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    print("  🛑  Too many consecutive errors — stopping.")
+            prev_src = state.get("src")
+            for _attempt in range(MAX_STUCK_SCROLLS):
+                state = await scroll_next(page, prev_src)
+                if state.get("src") and state.get("src") != prev_src:
                     break
+            else:
+                raise FeedStuck
 
-                try:
-                    await scroll_next(page)
-                except Exception:
-                    pass
-
-                cleanup_temp_file(TEMP_VIDEO)
-                cleanup_audio_file(TEMP_AUDIO)
-
-            print()
-
-    except asyncio.CancelledError:
-        print("\n⏹  Session cancelled.")
-    except KeyboardInterrupt:
-        print("\n⏹  Session interrupted by user.")
-    except Exception as exc:
+    except FeedStuck:
+        print("  🛑  The feed stopped advancing — ending the session.")
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print("\n⏹  Session interrupted.")
+    except Exception as exc:  # noqa: BLE001
         print(f"\n❌  Fatal error: {exc}")
         traceback.print_exc()
     finally:
-        cleanup_temp_file(TEMP_VIDEO)
-        cleanup_audio_file(TEMP_AUDIO)
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        if pipeline is not None:
+            await pipeline.close()
+        end_session(session_id)
         await close_browser()
 
-    print(f"\n🏁  FeedLab Local Async Agent — Done ({reel_count} reels processed)\n")
+    minutes = (time.monotonic() - started) / 60
+    scored = tally["scored"]
+    share = f"{tally['informative'] / scored:.0%}" if scored else "—"
+    print(f"\n🏁  Session {session_id} — {seq} reels in {minutes:.1f} min")
+    print(f"    informative: {tally['informative']} of {scored} scored ({share}) · valuable: {tally['valuable']}")
+    print(
+        f"    decisions: SKIP {tally['SKIP']} · WATCH {tally['WATCH']} · FULL_WATCH {tally['FULL_WATCH']}"
+        f" · decided before a score arrived: {tally['timeout']}"
+    )
+    if not args.dry_run:
+        print(f"    engagement: ❤️ {tally['liked']} · 🔖 {tally['saved']} · ➕ {tally['followed']}")
+    print("    Is the feed curated yet? →  python -m dashboard.report\n")
 
 
 def main() -> None:
     """Entry point."""
-    asyncio.run(main_async())
+    parser = argparse.ArgumentParser(description="FeedLab curation agent")
+    parser.add_argument("--minutes", type=float, default=SESSION_MINUTES, help="Session length")
+    parser.add_argument("--max-reels", type=int, default=None, help="Stop after this many reels")
+    parser.add_argument("--dry-run", action="store_true", help="Score and watch, but never like, save or follow")
+    args = parser.parse_args()
+    try:
+        asyncio.run(run(args))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

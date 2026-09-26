@@ -5,3 +5,8 @@ reels.db
 browser_profile/
 temp_reel.mp4
 __pycache__/
+reels.db-*
+.venv/
+.DS_Store
+debug/
+.backup/
