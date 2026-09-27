@@ -1,5 +1,5 @@
 """
-FeedLab — Lookahead Scoring Pipeline
+PRAG — Lookahead Scoring Pipeline
 
 Scores reels in the background, in feed order, as soon as their JSON
 arrives — usually before they reach the screen — so the browser loop can
@@ -25,6 +25,7 @@ from typing import Callable
 
 import aiohttp
 
+from agent import bias as bias_module
 from agent.creators import CreatorMemory
 from automation.feed_capture import FeedCatalog, ReelMeta
 from config import EXPLORATION_RATE, SCORING_WORKERS, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
@@ -81,13 +82,17 @@ class ScoringPipeline:
         on_result: Callable[[ReelMeta, ScoreResult], None] | None = None,
         backfill_window: int = 8,
         use_llm: bool = True,
+        fallback_scorer=None,
+        bias=None,
     ) -> None:
         self.catalog = catalog
         self.creators = creators
         self.rng = rng
         self.on_result = on_result
         self.backfill_window = backfill_window
-        self.use_llm = use_llm  # False: record what each reel says (--observe) without judging it
+        self.use_llm = use_llm  # False: record what each reel says (--observe / --rules) without the LLM
+        self.fallback_scorer = fallback_scorer  # ml.scorer.ModelScorer: score recordings when the LLM is off
+        self.bias = bias or bias_module.load(None)  # what this account looks for (agent/bias.py)
         self._user_agent = user_agent
 
         self._results: dict[str, ScoreResult] = {}
@@ -114,6 +119,8 @@ class ScoringPipeline:
         if USE_COVER_OCR:
             loads.append(loop.run_in_executor(self._ocr, ocr.warm_up))
         await asyncio.gather(*loads)
+        if self.fallback_scorer is not None:  # load the embedding model before the first reel
+            await loop.run_in_executor(self._ocr, self.fallback_scorer.probability, "warm-up")
         if self.use_llm:
             await evaluate_value_async(self._llm, ReelMeta(code="warmup", caption="Warm-up request."))
 
@@ -216,6 +223,8 @@ class ScoringPipeline:
             return ScoreResult(meta.code, basis="ad")
         if not self.use_llm:
             transcript, language, cover_text, problems = await self._perceive(meta)
+            if self.fallback_scorer is not None:
+                return await self._model_score(meta, transcript, language, cover_text, problems, started)
             return ScoreResult(
                 meta.code, basis="observed", transcript=transcript, transcript_language=language,
                 cover_text=cover_text, error="; ".join(problems) or None, seconds=time.monotonic() - started,
@@ -225,7 +234,7 @@ class ScoringPipeline:
         if self.creators.should_skip(meta.creator):
             gate = "creator_prior"
         else:
-            keyword = keyword_gate(meta.caption, meta.hashtags) or ""
+            keyword = keyword_gate(meta.caption, meta.hashtags, self.bias.skip_words) or ""
             gate = "keyword_gate" if keyword else None
         if gate and self.rng.random() >= EXPLORATION_RATE:
             return ScoreResult(meta.code, basis=gate, gate_keyword=keyword, seconds=time.monotonic() - started)
@@ -236,7 +245,8 @@ class ScoringPipeline:
             gate_keyword=keyword, gate_audit=bool(gate),
         )
         try:
-            judgement = await evaluate_value_async(self._llm, meta, transcript, language, cover_text)
+            judgement = await evaluate_value_async(self._llm, meta, transcript, language, cover_text,
+                                                   interests=self.bias.interests)
         except ScoringError as exc:
             problems.append(str(exc))
             return ScoreResult(
@@ -254,6 +264,22 @@ class ScoringPipeline:
             error="; ".join(problems) or None,
             seconds=time.monotonic() - started,
             **base,
+        )
+
+    async def _model_score(self, meta, transcript, language, cover_text, problems, started) -> ScoreResult:
+        """Score a recorded reel with the saved model (torch work stays on the OCR thread)."""
+        from ml.scorer import lead_line
+
+        loop = asyncio.get_running_loop()
+        value, reason = await loop.run_in_executor(
+            self._ocr, self.fallback_scorer.score, meta, transcript, cover_text
+        )
+        return ScoreResult(
+            meta.code, basis="score", value_score=round(value, 3),
+            is_informational=self.fallback_scorer.informative(value),
+            summary=lead_line(meta.caption, cover_text, transcript), reasoning=reason,
+            transcript=transcript, transcript_language=language, cover_text=cover_text,
+            error="; ".join(problems) or None, seconds=time.monotonic() - started,
         )
 
     async def _perceive(self, meta: ReelMeta) -> tuple[str, str | None, str, list[str]]:

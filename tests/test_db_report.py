@@ -177,7 +177,7 @@ class ReportMetricTests(unittest.TestCase):
         new = _session(conn, scorer="new")
         _reel(conn, new, 1, score=0.1)
         text = render(conn)
-        self.assertIn("1 reels scored with an older prompt/INTERESTS/model not compared", text)
+        self.assertIn("1 reels scored under another bias, prompt or model not compared", text)
         self.assertIn("(old scorer)", text)
 
 

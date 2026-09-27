@@ -1,5 +1,5 @@
 """
-FeedLab — Database Schema & Helpers
+PRAG — Database Schema & Helpers
 
 Creates (or opens) `reels.db` with:
   accounts     the Instagram accounts the agent may use
@@ -11,6 +11,7 @@ Creates (or opens) `reels.db` with:
 The legacy `reels` table from earlier versions is left untouched.
 """
 
+import datetime
 import sqlite3
 import os
 
@@ -39,7 +40,7 @@ SCORE_COLUMNS = (
 
 
 def get_connection(path: str = DB_PATH) -> sqlite3.Connection:
-    """Return a connection to the FeedLab SQLite database."""
+    """Return a connection to the PRAG SQLite database."""
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
@@ -232,6 +233,57 @@ def end_session(session_id: int) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def _today(now: datetime.datetime | None) -> tuple[str, str]:
+    """(local midnight, now) as the database's UTC timestamps."""
+    now = (now or datetime.datetime.now()).astimezone()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc = lambda ts: ts.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return utc(midnight), utc(now)
+
+
+def minutes_today(account: str, now: datetime.datetime | None = None,
+                  conn: sqlite3.Connection | None = None) -> float:
+    """Minutes the agent has scrolled `account` since local midnight.
+
+    A session that never closed (the process was killed) counts up to its last reel.
+    """
+    own = conn is None
+    conn = conn or get_connection()
+    seconds = conn.execute(
+        """
+        SELECT COALESCE(SUM(
+            strftime('%s', COALESCE(s.ended_at,
+                                    (SELECT MAX(i.shown_at) FROM impressions i WHERE i.session_id = s.id),
+                                    s.started_at))
+            - strftime('%s', s.started_at)), 0)
+        FROM sessions s WHERE s.account = ? AND s.started_at >= ? AND s.started_at <= ?
+        """,
+        (account, *_today(now)),
+    ).fetchone()[0]
+    if own:
+        conn.close()
+    return seconds / 60
+
+
+def engaged_today(account: str, now: datetime.datetime | None = None,
+                  conn: sqlite3.Connection | None = None) -> bool:
+    """Whether `account` already had a live session (likes, saves, follows allowed) that showed reels today."""
+    own = conn is None
+    conn = conn or get_connection()
+    row = conn.execute(
+        """
+        SELECT 1 FROM sessions s
+        WHERE s.account = ? AND s.dry_run = 0 AND s.started_at >= ? AND s.started_at <= ?
+          AND EXISTS (SELECT 1 FROM impressions i WHERE i.session_id = s.id)
+        LIMIT 1
+        """,
+        (account, *_today(now)),
+    ).fetchone()
+    if own:
+        conn.close()
+    return row is not None
 
 
 def log_impression(row: dict, conn: sqlite3.Connection | None = None) -> int:

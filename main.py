@@ -1,5 +1,5 @@
 """
-FeedLab — Curation Agent (P.R.A.G.: Predictive Reel Accumulation & Grouping)
+PRAG — Curation Agent (Parametric Reel Aggregation and Gradient)
 
 Phase 1: curate the account. The agent scrolls Instagram Reels on a
 dedicated account and engages the way a person with config.INTERESTS
@@ -11,12 +11,14 @@ dashboard.report` says whether the feed is curated yet.
 
     python main.py [--account NAME] [--minutes 40] [--max-reels N] [--dry-run] [--rules | --observe]
 
-Without LM Studio (while the project is being built):
+Without LM Studio:
   --rules    steers with quick rules — watch reels from followed accounts and
-             news-like captions, flick past the rest — and records every reel
+             news-like captions, flick past the rest. The trained model
+             (python -m ml.train --save) scores every reel if one is saved;
+             otherwise the reels are recorded for review.
   --observe  records every reel with the same watch time on each (no steering)
 Recorded reels (caption, cover text, speech) are scored afterwards with
-tools/review.py.
+tools/review.py. For the everyday run — scroll, then the digest — use daily.py.
 
 1. Starts LM Studio if needed and warms up Whisper, OCR and the LLM, then
    opens instagram.com/reels in the persistent browser profile.
@@ -39,10 +41,12 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 load_dotenv()
 
-from agent.bandit import Decision, decide
+from agent.bandit import Decision, decide, watch_dwell
+from agent.bias import load as load_bias
 from agent.creators import CreatorMemory
 from agent.pipeline import ScoreResult, ScoringPipeline
 from agent.rules import RuleVerdict, rule_score
+from ml.scorer import ModelScorer
 from automation.browser_driver import (
     close_browser,
     follow_active_creator,
@@ -51,6 +55,7 @@ from automation.browser_driver import (
     like_active_reel,
     open_reels,
     profile_dir,
+    profile_lock,
     save_active_reel,
     scroll_next,
     wait_for_first_reel,
@@ -59,6 +64,7 @@ from automation.feed_capture import FeedCatalog, ReelMeta
 from automation.login import ensure_logged_in
 from config import (
     AD_DWELL,
+    LATE_SCORE_WAIT,
     LIKE_THRESHOLD,
     LLM_MODEL_NAME,
     MAX_DECISION_WAIT,
@@ -132,6 +138,22 @@ async def execute_decision(
 
 # ── Logging ───────────────────────────────────────────────────────────
 
+async def await_score(pipeline: ScoringPipeline, code: str, meta: ReelMeta,
+                      shown_at: float) -> tuple[ScoreResult | None, RuleVerdict | None]:
+    """The reel's score, waited for MAX_DECISION_WAIT after it appeared — longer (LATE_SCORE_WAIT) when
+    the quick rules call it news-like. Long reels take 10-20 s to score; skipping a news reel for being
+    slow would teach Instagram the opposite of the goal and leave the scorer behind on every next reel.
+    Returns the rule verdict too when it was consulted.
+    """
+    result = await pipeline.wait_for(code, MAX_DECISION_WAIT - (time.monotonic() - shown_at))
+    if result is not None:
+        return result, None
+    rule = rule_score(meta, getattr(pipeline, "bias", None))
+    if rule.score >= WATCH_THRESHOLD:
+        result = await pipeline.wait_for(code, LATE_SCORE_WAIT - (time.monotonic() - shown_at))
+    return result, rule
+
+
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -190,9 +212,10 @@ def describe(
         who = f"@{state['creator']}" if state.get("creator") else "(unknown)"
     kind = f"{meta.audio_type or '?'} {meta.duration:.0f}s" if meta and meta.duration else ""
 
-    if rule is not None:
+    scored = result is not None and result.basis == "score"
+    if rule is not None and (decision.basis == "rules" or not scored):  # the rules decided (or stood in)
         verdict = f"rule {rule.score:.1f} · {rule.reason}"
-    elif result and result.basis == "score":
+    elif scored:
         verdict = f"{result.value_score:.2f} {result.topic}"
     elif result and result.basis == "keyword_gate":
         verdict = f"gate: {result.gate_keyword}"
@@ -224,26 +247,41 @@ def describe(
 
 # ── Main Loop ─────────────────────────────────────────────────────────
 
-async def run(args: argparse.Namespace) -> None:
-    """One curation session."""
+async def run(args: argparse.Namespace) -> dict:
+    """One curation session. Returns its outcome, e.g. {"status": "ok", "session_id": 7, "reels": 60}.
+
+    status: ok | no_account | busy | llm_unavailable | login_needed | no_reels | stuck | interrupted | error
+    """
     init_db()
     reset_cooldown_accounts()
     username, problem = choose_account(list_accounts(), args.account)
     if problem:
         print(f"⚠️  {problem}")
-        return
+        return {"status": "no_account", "detail": problem}
+    with profile_lock(username) as held:  # one browser per profile: a scheduled and a manual run can't overlap
+        if not held:
+            print(f"⚠️  @{username} is already being scrolled by another PRAG run.")
+            return {"status": "busy", "account": username}
+        return await _session(args, username)
+
+
+async def _session(args: argparse.Namespace, username: str) -> dict:
     mark_account_used(username)
     observe, rules = args.observe, args.rules
-    record = observe or rules  # the LLM is off: every reel is recorded for review
+    record = observe or rules  # the LLM is off: every reel is recorded
+    # With the LLM off, --rules scores the recordings with the trained model when there is one;
+    # otherwise (and always with --observe) they wait for review.
+    bias = load_bias(username)  # what this account looks for (the panel's Bias tab)
+    fallback = ModelScorer() if rules and ModelScorer.available(bias=bias) else None
 
     if not record:
         try:
             await asyncio.to_thread(ensure_llm_ready)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             print(f"❌  {exc}")
-            return
+            return {"status": "llm_unavailable", "account": username, "detail": str(exc)}
 
-    scorer = REVIEW_SCORER if record else scorer_version()
+    scorer = (fallback.version if fallback else REVIEW_SCORER) if record else scorer_version(bias.interests)
     creators = CreatorMemory() if record else CreatorMemory.from_history(*load_creator_history(scorer, username))
     catalog = FeedCatalog()
     rng = random.Random()
@@ -252,19 +290,23 @@ async def run(args: argparse.Namespace) -> None:
     if observe:
         mode = "observe — recording every reel, no scoring or engagement"
     elif rules:
-        mode = "rules — quick rules steer, every reel recorded" + (", no likes/saves/follows" if args.dry_run else "")
+        scored_by = "the trained model scores them" if fallback else "every reel recorded for review"
+        mode = f"rules — quick rules steer, {scored_by}" + (", no likes/saves/follows" if args.dry_run else "")
     else:
         mode = "dry run — no likes, saves or follows" if args.dry_run else "live"
-    print(f"\n🚀  FeedLab curation — @{username}, session {session_id} ({mode}, {args.minutes} min)\n")
+    headless = getattr(args, "headless", False)
+    print(f"\n🚀  PRAG curation — @{username}, session {session_id} ({mode}, {args.minutes} min"
+          + (", headless)" if headless else ")") + f"\n🎯  Bias: {bias.name}\n")
 
     pipeline: ScoringPipeline | None = None
     worker: asyncio.Task | None = None
     started = time.monotonic()
     seq = likes = saves = follows = 0
     tally: Counter = Counter()
+    outcome = {"status": "ok", "account": username, "session_id": session_id}
 
     try:
-        _context, page = await init_browser(profile_dir(username))
+        _context, page = await init_browser(profile_dir(username), headless=headless)
 
         def on_result(meta: ReelMeta, result: ScoreResult) -> None:
             # Scores that arrive after their reel was logged (decided on timeout).
@@ -275,6 +317,8 @@ async def run(args: argparse.Namespace) -> None:
             user_agent=await page.evaluate("navigator.userAgent"),
             on_result=on_result,
             use_llm=not record,
+            fallback_scorer=fallback,
+            bias=bias,
         )
         print("  🔥  Warming up Whisper and OCR …" if record else "  🔥  Warming up Whisper, OCR and the LLM …")
         warm_start = time.monotonic()
@@ -282,7 +326,8 @@ async def run(args: argparse.Namespace) -> None:
             await pipeline.warm_up()
         except ScoringError as exc:
             print(f"❌  LLM warm-up failed: {exc}")
-            return
+            outcome.update(status="llm_unavailable", detail=str(exc))
+            return outcome
         print(f"  🔥  Ready in {time.monotonic() - warm_start:.0f}s")
 
         catalog.on_new_feed_reel = pipeline.enqueue
@@ -291,16 +336,18 @@ async def run(args: argparse.Namespace) -> None:
 
         await open_reels(page)
         if not await is_logged_in(page):
-            if not await ensure_logged_in(page, username):
+            if not await ensure_logged_in(page, username, headless=headless):
                 print("❌  Not logged in — ending the session.")
-                return
+                outcome["status"] = "login_needed"
+                return outcome
             await open_reels(page)
         await catalog.ingest_embedded(page)
 
         state = await wait_for_first_reel(page)
         if not state.get("src"):
             print("❌  No reel started playing.")
-            return
+            outcome["status"] = "no_reels"
+            return outcome
 
         deadline = started + args.minutes * 60
         while time.monotonic() < deadline and (args.max_reels is None or seq < args.max_reels):
@@ -320,7 +367,7 @@ async def run(args: argparse.Namespace) -> None:
                 decision = (Decision("SKIP", rng.uniform(*AD_DWELL), "ad") if is_ad
                             else Decision("OBSERVE", rng.uniform(*OBSERVE_DWELL), "observe"))
             elif rules:
-                rule = rule_score(meta) if meta is not None and not is_ad else None
+                rule = rule_score(meta, bias) if meta is not None and not is_ad else None
                 decision = decide(
                     value_score=rule.score if rule else None,
                     basis="ad" if is_ad else "no_metadata" if rule is None else "score",
@@ -338,7 +385,7 @@ async def run(args: argparse.Namespace) -> None:
             else:
                 result = None
                 if meta is not None and not is_ad:
-                    result = await pipeline.wait_for(code, MAX_DECISION_WAIT - (time.monotonic() - shown_at))
+                    result, rule = await await_score(pipeline, code, meta, shown_at)
 
                 if is_ad:
                     basis = "ad"
@@ -366,6 +413,8 @@ async def run(args: argparse.Namespace) -> None:
                     rng=rng,
                     pre_analyzed=ready_on_arrival,
                 )
+                if basis == "timeout" and rule is not None and rule.score >= WATCH_THRESHOLD:
+                    decision = Decision("WATCH", watch_dwell(meta.duration, rng), "timeout")  # waited; rules said watch
 
             done = await execute_decision(page, decision, meta, shown_at, dry_run=args.dry_run, rng=rng)
             # Session caps count what was done — in a dry run, what would have been.
@@ -409,11 +458,14 @@ async def run(args: argparse.Namespace) -> None:
 
     except FeedStuck:
         print("  🛑  The feed stopped advancing — ending the session.")
+        outcome["status"] = "stuck"
     except (asyncio.CancelledError, KeyboardInterrupt):
         print("\n⏹  Session interrupted.")
+        outcome["status"] = "interrupted"
     except Exception as exc:  # noqa: BLE001
         print(f"\n❌  Fatal error: {exc}")
         traceback.print_exc()
+        outcome.update(status="error", detail=str(exc))
     finally:
         if worker is not None:
             worker.cancel()
@@ -424,12 +476,13 @@ async def run(args: argparse.Namespace) -> None:
         await close_browser()
 
     minutes = (time.monotonic() - started) / 60
-    if record:
+    outcome.update(reels=seq, minutes=round(minutes, 1), informative=tally["informative"], scored=tally["scored"])
+    if record and fallback is None:
         watched = tally["WATCH"] + tally["FULL_WATCH"] + tally["REWATCH"]
         steer = f" · rules watched {watched}, skipped {tally['SKIP']} ({tally['flicked']} flicked)" if rules else ""
         print(f"\n🏁  Session {session_id} — {seq} reels in {minutes:.1f} min{steer} · recorded for review")
         print(f"    Next: python -m tools.review export --account {username} --session {session_id}\n")
-        return
+        return outcome
     scored = tally["scored"]
     share = f"{tally['informative'] / scored:.0%}" if scored else "—"
     print(f"\n🏁  Session {session_id} — {seq} reels in {minutes:.1f} min")
@@ -441,18 +494,22 @@ async def run(args: argparse.Namespace) -> None:
     if not args.dry_run:
         print(f"    engagement: ❤️ {tally['liked']} · 🔖 {tally['saved']} · ➕ {tally['followed']}")
     print("    Is the feed curated yet? →  python -m dashboard.report\n")
+    return outcome
 
 
 def main() -> None:
     """Entry point."""
-    parser = argparse.ArgumentParser(description="FeedLab curation agent")
+    parser = argparse.ArgumentParser(description="PRAG curation agent")
     parser.add_argument("--account", help="Instagram account to use (required when several are ACTIVE)")
     parser.add_argument("--minutes", type=float, default=SESSION_MINUTES, help="Session length")
     parser.add_argument("--max-reels", type=int, default=None, help="Stop after this many reels")
     parser.add_argument("--dry-run", action="store_true", help="Never like, save or follow (watch time still steers)")
+    parser.add_argument("--headless", action="store_true",
+                        help="No browser window (Instagram can tell; a login that needs a code needs the window)")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--rules", action="store_true",
-                       help="Steer with quick rules instead of the LLM (no LM Studio); record every reel for review")
+                       help="Steer with quick rules instead of the LLM (no LM Studio); the trained model scores "
+                            "the reels when one is saved (python -m ml.train --save), else they're recorded for review")
     modes.add_argument("--observe", action="store_true",
                        help="Record every reel for review with the same watch time on each; no LM Studio, no steering")
     args = parser.parse_args()

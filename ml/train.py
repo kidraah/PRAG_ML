@@ -1,5 +1,5 @@
 """
-FeedLab — Train the Preference Model
+PRAG — Train the Preference Model
 
 Learns "is this reel informative?" (value score >= WATCH_THRESHOLD) from
 labelled reels, so the agent can one day score reels in milliseconds
@@ -24,8 +24,10 @@ import os
 
 import numpy as np
 
+from agent.bias import DEFAULT_FINGERPRINT, PRESETS
+from agent.bias import load as load_bias
 from config import EMBEDDING_MODEL, WATCH_THRESHOLD
-from database.db import get_connection
+from database.db import REVIEW_SCORER, get_connection, list_accounts
 from ml.dataset import Example, load_examples
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -94,7 +96,18 @@ def evaluate(examples: list[Example], folds: int = 5, embed_fn=None) -> dict:
     return results
 
 
-def train_and_save(kind: str, examples: list[Example], report: dict, embed_fn=None) -> str:
+def bias_of_scorer(scorer: str) -> str | None:
+    """The interests fingerprint a scorer's labels were judged under (reviews: the default bias), if known."""
+    if scorer == REVIEW_SCORER:
+        return DEFAULT_FINGERPRINT
+    from perception.local_evaluator import scorer_version
+
+    candidates = [load_bias(a["username"]) for a in list_accounts()] + list(PRESETS.values())
+    return next((b.fingerprint for b in candidates if scorer_version(b.interests) == scorer), None)
+
+
+def train_and_save(kind: str, examples: list[Example], report: dict, embed_fn=None,
+                   bias: str = DEFAULT_FINGERPRINT) -> str:
     import joblib
 
     y = np.array([e.informative for e in examples])
@@ -105,6 +118,7 @@ def train_and_save(kind: str, examples: list[Example], report: dict, embed_fn=No
         "kind": kind, "model": model, "embedding_model": EMBEDDING_MODEL if kind == "embedding" else None,
         "threshold": 0.5, "trained_on": len(examples), "positives": int(y.sum()),
         "cv": report, "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "bias": bias,  # it only scores for this bias (ml/scorer.py checks)
     }, path)
     return path
 
@@ -144,7 +158,11 @@ def main() -> None:
     if args.save:
         best = max(("tfidf", "embedding"), key=lambda k: results[k]["all"]["avg_precision"] or 0)
         report = {k: v["all"] for k, v in results.items() if "all" in v}
-        print(f"\n💾  Saved {best} model → {train_and_save(best, examples, report)}")
+        bias = bias_of_scorer(args.scorer)
+        if bias is None:
+            print(f"\n⚠️  No bias matches scorer {args.scorer}, so the model can't tell which bias it's for; not saved.")
+            return
+        print(f"\n💾  Saved {best} model → {train_and_save(best, examples, report, bias=bias)}")
 
 
 if __name__ == "__main__":

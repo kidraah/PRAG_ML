@@ -1,5 +1,5 @@
 """
-FeedLab — Asynchronous Playwright Browser Controller
+PRAG — Asynchronous Playwright Browser Controller
 
 Persistent Chromium profile with stealth patches, Reels navigation, and
 actions on whichever reel is on screen. The on-screen reel is found from
@@ -9,6 +9,8 @@ the preloaded neighbours stacked above and below it.
 """
 
 import asyncio
+import contextlib
+import fcntl
 import os
 import random
 import re
@@ -42,13 +44,32 @@ def profile_dir(account: str) -> str:
     return os.path.join(PROFILES_DIR, account)
 
 
-async def init_browser(user_data_dir: str) -> tuple[BrowserContext, Page]:
+@contextlib.contextmanager
+def profile_lock(account: str):
+    """Hold the account's browser profile for this run; yields False if another run already holds it."""
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    with open(os.path.join(PROFILES_DIR, f"{account}.lock"), "w") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+async def init_browser(user_data_dir: str, headless: bool = False) -> tuple[BrowserContext, Page]:
     """Launch a persistent Chromium context with stealth in async mode.
 
     Parameters
     ----------
     user_data_dir : str
         Directory for persistent cookies / local-storage.
+    headless : bool
+        Run without a window, in Chromium's full headless mode: the same browser build, so reels play as they
+        do in a window. It reports itself as HeadlessChrome, and a login that needs a code can't be finished.
 
     Returns
     -------
@@ -59,7 +80,8 @@ async def init_browser(user_data_dir: str) -> tuple[BrowserContext, Page]:
     _playwright = await async_playwright().start()
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir,
-        headless=False,
+        headless=headless,
+        channel="chromium" if headless else None,  # the full browser, not the stripped-down headless shell
         viewport={"width": 1280, "height": 800},
         locale="en-US",
         args=["--disable-blink-features=AutomationControlled"],
@@ -68,7 +90,7 @@ async def init_browser(user_data_dir: str) -> tuple[BrowserContext, Page]:
     _page = _context.pages[0] if _context.pages else await _context.new_page()
     await Stealth().apply_stealth_async(_page)
 
-    print("🌐  Playwright async browser launched (persistent profile).")
+    print("🌐  Playwright async browser launched (persistent profile" + (", headless)." if headless else ")."))
     return _context, _page
 
 
@@ -97,7 +119,9 @@ async def open_reels(page: Page) -> None:
     print("  🎬  Opened Instagram Reels.")
 
 
-NOT_LOGGED_IN_URLS = ("accounts/login", "accounts/emailsignup", "/challenge", "two_factor", "accounts/suspended")
+NOT_LOGGED_IN_URLS = ("accounts/login", "accounts/emailsignup", "/challenge", "two_factor", "auth_platform",
+                      "accounts/suspended")
+CHECK_URLS = ("/challenge", "two_factor", "auth_platform")  # Instagram asking for a security code
 
 
 async def is_logged_in(page: Page) -> bool:
@@ -166,7 +190,7 @@ async def log_in(page: Page, username: str, password: str, timeout: float = 60.0
     while loop.time() < deadline:
         await asyncio.sleep(2)
         url = page.url.lower()
-        if "/challenge" in url or "two_factor" in url:
+        if any(part in url for part in CHECK_URLS):
             return "challenge"
         try:
             body = (await page.inner_text("body")).lower()
@@ -177,6 +201,40 @@ async def log_in(page: Page, username: str, password: str, timeout: float = 60.0
         if await wait_for_login(page, timeout=1):
             return "ok"
     return "failed"
+
+
+# The security-code box on Instagram's check pages (challenge, two-factor, the newer code entry).
+CODE_FIELD = ", ".join(f'input{match}:not([type="hidden"]):not([type="password"])' for match in (
+    '[autocomplete="one-time-code"]', '[name="verificationCode"]', '[name="security_code"]',
+    '[name="approvals_code"]', '[name="code"]', '[aria-label*="code" i]', '[placeholder*="code" i]',
+    '[inputmode="numeric"]',
+))
+SUBMIT_BUTTON = re.compile(r"^(confirm|submit|continue|next|verify|log in)$", re.I)
+
+
+async def find_code_field(page: Page, timeout: float = 15.0):
+    """The security-code box on the page (a Playwright locator), or None if there isn't one."""
+    field = page.locator(CODE_FIELD).first
+    try:
+        await field.wait_for(state="visible", timeout=timeout * 1000)
+    except Exception:  # noqa: BLE001 — no such box (or the page moved on)
+        return None
+    return field
+
+
+async def enter_code(page: Page, field, code: str) -> None:
+    """Type the code and submit it: Enter, then a Confirm-like button if the box is still showing."""
+    await field.fill(code)
+    await _human_delay(0.3, 0.8)
+    await field.press("Enter")
+    await asyncio.sleep(3)
+    try:
+        if await field.is_visible():
+            button = page.get_by_role("button", name=SUBMIT_BUTTON)
+            if await button.count():
+                await button.first.click()
+    except Exception:  # noqa: BLE001 — the page moved on
+        pass
 
 
 def reel_code_from_url(url: str) -> str | None:

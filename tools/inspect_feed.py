@@ -1,5 +1,5 @@
 """
-FeedLab — Feed Inspector (diagnostic)
+PRAG — Feed Inspector (diagnostic)
 
 Opens Instagram Reels with the agent's browser profile, scrolls a few reels
 WITHOUT liking, saving or following, and dumps what the web app receives:

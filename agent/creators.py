@@ -1,5 +1,5 @@
 """
-FeedLab — Creator Memory
+PRAG — Creator Memory
 
 Per-creator score history across sessions, used two ways: follow creators
 who keep posting valuable reels (a follow is one of the strongest signals

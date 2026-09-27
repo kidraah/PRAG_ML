@@ -11,9 +11,9 @@ import numpy as np
 
 from config import VERIFY_DAYS, VERIFY_MAX_DAYS
 from database.db import init_db, log_impression
-from stories.digest import build_digest, render_html, to_json, write_digest
-from stories.grouping import Reel, group
-from stories.verify import Article, key_terms, parse_rss, search_window, verify
+from stories.digest import build_digest, render_html, story_title, to_json, write_digest
+from stories.grouping import Reel, Story, group
+from stories.verify import Article, Verification, gist, key_terms, parse_rss, search_window, verify
 
 NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.timezone.utc)
 
@@ -51,6 +51,18 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual((ghosh.lead.code, ghosh.score), ("B", 0.90))
         self.assertEqual(ghosh.first_seen, NOW - datetime.timedelta(minutes=30))
         self.assertEqual(ghosh.creators, ["c_A", "c_B"])
+
+    def test_title_without_a_topic(self):
+        # Reels scored by the trained model have a caption line as summary and no topic label.
+        story = Story([_reel("M1", "", "Parliament passes the Digital Personal Data Protection amendment bill "
+                                       "after a long debate on Friday", 0.8)])
+        self.assertEqual(story.title, "Parliament passes the Digital Personal Data Protection amendment bill …")
+        self.assertEqual(story.lead.text, story.summary)
+        headline = Article("Lok Sabha passes data protection amendment", "The Hindu", "u")
+        self.assertEqual(story_title(story, Verification("reported", headlines=[headline])), headline.title)
+        self.assertEqual(story_title(story, Verification("reels_only")), story.title)
+        labelled = Story([_reel("L1", "Data protection law", "Parliament passes the bill", 0.8)])
+        self.assertEqual(story_title(labelled, Verification("reported", headlines=[headline])), "Data protection law")
 
     def test_empty_and_single(self):
         self.assertEqual(group([], embed_fn=fake_embed({})), [])
@@ -107,6 +119,31 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(len(result.headlines), 3)               # duplicates removed, best three kept
         self.assertEqual(len(calls), 1)                          # enough results: no broader search
         self.assertTrue(result.label.startswith("In the news: 4 outlets"))
+
+    def test_gist(self):
+        self.assertEqual(gist("India and Pakistan traded charges at the UN, with India accusing Pakistan of terror."),
+                         "India and Pakistan traded charges at the UN")
+        self.assertEqual(gist("Rain continues in Chamoli. Snow at high altitudes."), "Rain continues in Chamoli.")
+
+    def test_headlines_match_the_gist_of_a_detailed_summary(self):
+        embed = fake_embed({"India saying": [0, 1, 0], "diesel export": [1, 0, 0], "Diesel": [0.95, 0.31, 0]})
+        result = verify("US diesel export ban", "Washington is weighing a diesel export ban, with India saying no.",
+                        search=lambda q, d: [Article("US mulls Diesel ban", "Bloomberg", "u1")], embed_fn=embed, now=NOW)
+        self.assertEqual((result.status, result.outlets), ("reported", ["Bloomberg"]))
+
+    def test_nothing_close_widens_the_search(self):
+        unrelated = [Article(f"India wins cricket match {i}", "ESPN", f"u{i}") for i in range(6)]
+        queries = []
+
+        def search(query, days):
+            queries.append(query)
+            return unrelated if len(queries) == 1 else [Article("US mulls Diesel ban", "Bloomberg", "b")]
+
+        embed = fake_embed({"diesel export": [1, 0, 0], "Diesel": [0.95, 0.31, 0], "cricket": [0, 1, 0]})
+        result = verify("US diesel export ban", "Washington is weighing a diesel export ban.", search=search,
+                        embed_fn=embed, now=NOW)
+        self.assertEqual(queries, ["Washington diesel export ban", "diesel export ban"])
+        self.assertEqual((result.status, result.outlets), ("reported", ["Bloomberg"]))
 
     def test_no_close_headline_and_failures(self):
         result, calls = self._verify([Article("India wins cricket match", "ESPN", "u")])

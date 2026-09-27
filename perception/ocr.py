@@ -1,5 +1,5 @@
 """
-FeedLab — Cover Text OCR (EasyOCR)
+PRAG — Cover Text OCR (EasyOCR)
 
 Reads the text burned into a reel's cover image. News reels usually put
 the headline there, and for reels set to a music track it is often the

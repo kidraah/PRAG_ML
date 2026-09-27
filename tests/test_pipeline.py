@@ -1,17 +1,23 @@
 """Tests for agent/pipeline.py (queue order, gates, worker) and main.py's logging glue — no network, no models."""
 
+import argparse
 import asyncio
+import contextlib
+import io
 import random
+import time
 import unittest
 from unittest import mock
 
 import agent.pipeline as pipeline_module
+import main as main_module
 from agent.bandit import Decision
+from agent.bias import Bias
 from agent.creators import CreatorMemory
 from agent.pipeline import ScoreResult, ScoringPipeline
 from automation.feed_capture import FeedCatalog, ReelMeta
 from agent.rules import RuleVerdict
-from main import Performed, describe, impression_row
+from main import Performed, await_score, describe, impression_row
 from perception.local_evaluator import ScoringError, ValueJudgement
 from tests.fixtures import feed_page, make_media
 
@@ -117,6 +123,50 @@ class GateTests(unittest.TestCase):
                          ("observed", "बोले", "headline", None))
         self.assertEqual(llm_calls, 0)
 
+    def test_rules_mode_scores_recordings_with_the_trained_model(self):
+        class FakeModel:
+            def score(self, meta, transcript, cover_text):
+                return (0.9, "model p=0.90") if "news" in transcript else (0.1, "model p=0.10")
+
+            @staticmethod
+            def informative(value):
+                return value >= 0.4
+
+        async def scenario():
+            p = ScoringPipeline(FeedCatalog(), CreatorMemory(), rng=_NeverExplore(), user_agent="test",
+                                use_llm=False, fallback_scorer=FakeModel())
+            evaluate = mock.AsyncMock()
+            with mock.patch.object(p, "_perceive", mock.AsyncMock(return_value=("news tonight", "en", "", []))), \
+                 mock.patch.object(pipeline_module, "evaluate_value_async", evaluate):
+                result = await p._score(ReelMeta(code="M", caption="Parliament passes the data bill. #news"))
+            await p.close()
+            return result, evaluate.await_count
+
+        result, llm_calls = asyncio.run(scenario())
+        self.assertEqual((result.basis, result.value_score, result.is_informational), ("score", 0.9, True))
+        self.assertEqual((result.summary, result.reasoning, result.topic),
+                         ("Parliament passes the data bill.", "model p=0.90", ""))
+        self.assertEqual((result.transcript, llm_calls), ("news tonight", 0))
+
+    def test_the_bias_steers_the_gate_and_the_llm(self):
+        tech = Bias(name="Tech", interests="AI launches and research results, with real details.",
+                    skip_words=["cricket"])
+
+        async def scenario():
+            p = ScoringPipeline(FeedCatalog(), CreatorMemory(), rng=_NeverExplore(), user_agent="test", bias=tech)
+            evaluate = mock.AsyncMock(return_value=_judgement(0.9))
+            with mock.patch.object(p, "_perceive", mock.AsyncMock(return_value=("speech", "en", "", []))), \
+                 mock.patch.object(pipeline_module, "evaluate_value_async", evaluate):
+                gated = await p._score(ReelMeta(code="C", caption="Cricket highlights"))
+                scored = await p._score(ReelMeta(code="R", caption="Easy recipe"))  # skipped by default, not by Tech
+            await p.close()
+            return gated, scored, evaluate
+
+        gated, scored, evaluate = asyncio.run(scenario())
+        self.assertEqual((gated.basis, gated.gate_keyword), ("keyword_gate", "cricket"))
+        self.assertEqual(scored.basis, "score")
+        self.assertEqual(evaluate.await_args.kwargs["interests"], tech.interests)
+
     def test_llm_error_is_an_error_not_a_zero(self):
         result, _ = self.run_score(ReelMeta(code="E"), error=ScoringError("LM Studio unreachable"))
         self.assertEqual(result.basis, "llm_error")
@@ -186,6 +236,66 @@ class WorkerTests(unittest.TestCase):
         results, peak = asyncio.run(scenario())
         self.assertEqual(peak, 2)
         self.assertEqual([r.basis for r in results], ["score", "score"])
+
+
+class AwaitScoreTests(unittest.TestCase):
+    """A slow score: news-like reels keep playing while it finishes, the rest are skipped at MAX_DECISION_WAIT."""
+
+    def wait(self, meta, arrives_on_call):
+        waits = []
+
+        class SlowPipeline:
+            async def wait_for(self, code, timeout):
+                waits.append(round(timeout, 1))
+                return ScoreResult(code, basis="score", value_score=0.9) if len(waits) == arrives_on_call else None
+
+        result, rule = asyncio.run(await_score(SlowPipeline(), meta.code, meta, time.monotonic()))
+        return result, rule, waits
+
+    def test_ready_in_time(self):
+        result, rule, waits = self.wait(ReelMeta(code="A", caption="dance"), arrives_on_call=1)
+        self.assertEqual((result.value_score, rule, waits), (0.9, None, [3.5]))
+
+    def test_news_like_reel_waits_longer_for_its_score(self):
+        result, rule, waits = self.wait(ReelMeta(code="N", creator="the_hindu", creator_following=True),
+                                        arrives_on_call=2)
+        self.assertEqual((result.value_score, rule.score, waits), (0.9, 0.8, [3.5, 25.0]))
+
+    def test_other_reels_are_not_waited_for(self):
+        result, rule, waits = self.wait(ReelMeta(code="J", caption="dance challenge"), arrives_on_call=2)
+        self.assertIsNone(result)
+        self.assertLess(rule.score, 0.4)
+        self.assertEqual(waits, [3.5])
+
+
+class OutcomeTests(unittest.TestCase):
+    """run() reports why a session didn't happen, so the daily runner can say so."""
+
+    def run_session(self, **patches):
+        args = argparse.Namespace(account=None, observe=False, rules=False, dry_run=True, minutes=1, max_reels=1)
+        quiet = dict(init_db=mock.DEFAULT, reset_cooldown_accounts=mock.DEFAULT, list_accounts=mock.DEFAULT,
+                     mark_account_used=mock.DEFAULT, start_session=mock.DEFAULT, profile_lock=mock.DEFAULT)
+        with mock.patch.multiple(main_module, **{**quiet, **patches}) as mocks, \
+                contextlib.redirect_stdout(io.StringIO()):
+            return asyncio.run(main_module.run(args)), mocks
+
+    def test_no_account(self):
+        outcome, _ = self.run_session(choose_account=mock.Mock(return_value=(None, "No ACTIVE account")))
+        self.assertEqual(outcome, {"status": "no_account", "detail": "No ACTIVE account"})
+
+    def test_llm_unavailable_stops_before_a_session_starts(self):
+        outcome, mocks = self.run_session(choose_account=mock.Mock(return_value=("acct", None)),
+                                          ensure_llm_ready=mock.Mock(side_effect=RuntimeError("LM Studio is off")))
+        self.assertEqual(outcome, {"status": "llm_unavailable", "account": "acct", "detail": "LM Studio is off"})
+        mocks["start_session"].assert_not_called()
+
+    def test_busy_when_another_run_holds_the_profile(self):
+        held_elsewhere = mock.MagicMock()
+        held_elsewhere.return_value.__enter__.return_value = False
+        outcome, mocks = self.run_session(choose_account=mock.Mock(return_value=("acct", None)),
+                                          profile_lock=held_elsewhere)
+        self.assertEqual(outcome, {"status": "busy", "account": "acct"})
+        mocks["mark_account_used"].assert_not_called()
 
 
 class ImpressionRowTests(unittest.TestCase):

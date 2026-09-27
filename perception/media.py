@@ -1,5 +1,5 @@
 """
-FeedLab — Media Downloads
+PRAG — Media Downloads
 
 Fetches a reel's audio-only DASH track and its cover image straight from
 the CDN, using the signed URLs in the feed JSON (no cookies needed). Both

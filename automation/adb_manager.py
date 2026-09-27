@@ -1,5 +1,5 @@
 """
-FeedLab — ADB Device State Isolator
+PRAG — ADB Device State Isolator
 
 Wipes Instagram app data and randomises the Android device ID via ADB
 so each account cycle looks like a fresh device to Instagram's servers.

@@ -1,5 +1,5 @@
 """
-FeedLab — Speech Transcription (mlx-whisper on Apple Silicon)
+PRAG — Speech Transcription (mlx-whisper on Apple Silicon)
 
 Transcribes a reel's full audio track. Whisper often labels spoken Hindi
 as Urdu and prints Urdu script, so a detected language outside

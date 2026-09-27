@@ -1,5 +1,5 @@
 """
-FeedLab — Configuration
+PRAG — Configuration
 
 Everything the agent is tuned by lives here. INTERESTS is the one to edit
 first: it is the only description of "valuable" the scorer ever sees, so
@@ -122,7 +122,8 @@ WATCH_FRACTION = (0.35, 0.70)          # of the reel's duration
 WATCH_DWELL_BOUNDS = (5.0, 25.0)
 FULL_WATCH_FRACTION = (0.90, 1.00)
 FULL_WATCH_BOUNDS = (8.0, 75.0)
-MAX_DECISION_WAIT = 3.5                # a reel still unscored after this long is skipped (and scored later for the report)
+MAX_DECISION_WAIT = 3.5                # a reel still unscored after this long is skipped (and scored later for the report)...
+LATE_SCORE_WAIT = 25.0                 # ...unless the quick rules call it news-like: it keeps playing up to this long for its score
 
 EXPLORATION_RATE = 0.10                # chance to watch a borderline reel / score a gated one
 EXPLORE_MIN_SCORE = 0.25               # borderline = between this and WATCH_THRESHOLD
@@ -146,5 +147,13 @@ VERIFY_SIMILARITY = 0.60               # a headline covers the story if its mean
 # ── Sessions & verification ───────────────────────────────────────────
 
 SESSION_MINUTES = 40
+DAILY_MAX_MINUTES = 120                # daily.py stops scrolling an account after this many minutes a day
+MIN_BATTERY = 30                       # daily.py skips the session on battery below this % (the digest still updates)
+ENGAGEMENT_MODES = {                   # daily.py --engagement
+    "live": "likes, saves and follows",
+    "dry": "watch time only, no likes, saves or follows",
+    "mixed": "live for the day's first session, dry runs after",
+}
+DAILY_ENGAGEMENT = "mixed"             # daily.py's default engagement mode
 CURATION_WINDOW = 100                  # judge the feed on the latest N organic reels
 CURATION_TARGET_SHARE = 0.50           # share scoring >= WATCH_THRESHOLD to call it curated

@@ -21,7 +21,7 @@ class RuleTests(unittest.TestCase):
     def test_news_words(self):
         self.assertEqual(rule_score(_meta("RBI cuts repo rate, EMIs to fall #finance")).score, NEWS_WORD_SCORE)
         self.assertEqual(rule_score(_meta("UP से उत्तराखंड तक आफत की बारिश! IMD ने जारी किया अलर्ट")).reason,
-                         "news word: imd")
+                         "watch word: imd")
         self.assertEqual(news_word("केंद्र सरकार की नई योजना"), "केंद्र सरकार")
         self.assertEqual(news_word("", ["मौसमविभाग"]), "मौसम")  # inside a Hindi hashtag
 

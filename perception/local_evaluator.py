@@ -1,9 +1,10 @@
 """
-FeedLab — Value Scoring with a Local LLM (LM Studio)
+PRAG — Value Scoring with a Local LLM (LM Studio)
 
 Given what was extracted from a reel — caption, creator, cover text,
-speech transcript — asks the local LLM how much the person described in
-config.INTERESTS would want to see it, plus a topic label and a one-line
+speech transcript — asks the local LLM how much the person described by
+the account's bias (agent/bias.py; config.INTERESTS by default) would want
+to see it, plus a topic label and a one-line
 summary of the reel's actual claim. The JSON schema puts value_score
 last, so the model states what the reel says before scoring it.
 
@@ -65,9 +66,10 @@ class ValueJudgement:
     reasoning: str
 
 
-def scorer_version() -> str:
-    """Short fingerprint of the scoring prompt (INTERESTS included) + model; scores only compare within one."""
-    return hashlib.sha1(f"{build_system_prompt()}|{LLM_MODEL_NAME}".encode()).hexdigest()[:8]
+def scorer_version(interests: str = INTERESTS) -> str:
+    """Short fingerprint of the scoring prompt (the bias's interests included) + model; scores only compare
+    within one."""
+    return hashlib.sha1(f"{build_system_prompt(interests)}|{LLM_MODEL_NAME}".encode()).hexdigest()[:8]
 
 
 # ── Prompt ────────────────────────────────────────────────────────────
@@ -178,12 +180,13 @@ async def evaluate_value_async(
     *,
     today: datetime.date | None = None,
     timeout: float = 60.0,
+    interests: str | None = None,
 ) -> ValueJudgement:
-    """Ask LM Studio for a ValueJudgement of one reel."""
+    """Ask LM Studio for a ValueJudgement of one reel, against `interests` (default: config.INTERESTS)."""
     payload = {
         "model": LLM_MODEL_NAME,
         "messages": [
-            {"role": "system", "content": build_system_prompt()},
+            {"role": "system", "content": build_system_prompt(interests or INTERESTS)},
             {
                 "role": "user",
                 "content": build_user_message(
@@ -235,6 +238,11 @@ def _served_model_ids() -> list[str] | None:
     except (OSError, ValueError):
         return None
     return [m.get("id", "") for m in data.get("data", [])]
+
+
+def llm_serving() -> bool:
+    """Whether LM Studio is up and offers LLM_MODEL_NAME right now (nothing is started or loaded)."""
+    return LLM_MODEL_NAME in (_served_model_ids() or [])
 
 
 def _loaded_parallel(cli: str) -> int | None:

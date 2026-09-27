@@ -1,5 +1,5 @@
 """
-FeedLab — Perception Integration Test
+PRAG — Perception Integration Test
 
 Calls evaluate_alignment() with mock transcript / OCR data to verify
 that the LM Studio endpoint is reachable and returns a valid score.
@@ -30,7 +30,7 @@ def test_evaluate_alignment() -> None:
     target_bias = "Artificial Intelligence"
 
     print("=" * 60)
-    print("  FeedLab — Perception Integration Test")
+    print("  PRAG — Perception Integration Test")
     print("=" * 60)
     print()
     print(f"  Transcript : {mock_transcript[:60]}…")

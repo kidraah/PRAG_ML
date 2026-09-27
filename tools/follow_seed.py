@@ -1,8 +1,9 @@
 """
-FeedLab — Pre-seed an Account by Following Creators
+PRAG — Pre-seed an Account by Following Creators
 
 Gives a fresh account a head start: follows a list of accounts (by default
-seeds/news_india.txt), one profile at a time at a person's pace. Only
+the ones in the account's bias, else seeds/news_india.txt), one profile at
+a time at a person's pace. Only
 verified accounts are followed, so a mistyped handle or an impostor page
 is skipped instead of followed. If the account isn't logged in yet, it
 logs in with the password from accounts.json, or waits for you to log in
@@ -17,6 +18,7 @@ import argparse
 import asyncio
 import os
 import random
+import signal
 from collections import Counter
 
 from automation.browser_driver import (
@@ -27,6 +29,8 @@ from automation.browser_driver import (
     open_profile,
     profile_dir,
 )
+from agent.bias import load as load_bias
+from automation.browser_driver import profile_lock
 from automation.login import ensure_logged_in
 from database.db import choose_account, list_accounts
 
@@ -77,18 +81,28 @@ async def seed(account: str, handles: list[str], check_only: bool) -> Counter:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("handles", nargs="*", help="Accounts to follow (default: the seed file)")
+    parser.add_argument("handles", nargs="*", help="Accounts to follow (default: the account's bias, else the seed file)")
     parser.add_argument("--account", help="Which of your accounts does the following")
-    parser.add_argument("--file", default=DEFAULT_SEEDS, help="Seed file, one handle per line")
+    parser.add_argument("--file", help="Seed file, one handle per line")
     parser.add_argument("--check", action="store_true", help="Only check the handles; follow nothing")
     args = parser.parse_args()
+    signal.signal(signal.SIGINT, signal.default_int_handler)  # the panel's Stop works however it was started
 
     account, problem = choose_account(list_accounts(), args.account)
     if problem:
         print(f"⚠️  {problem}")
         return
-    handles = [h.lstrip("@") for h in args.handles] or read_handles(args.file)
-    outcomes = asyncio.run(seed(account, handles, args.check))
+    handles = ([h.lstrip("@") for h in args.handles] or (read_handles(args.file) if args.file else None)
+               or load_bias(account).seeds or read_handles(DEFAULT_SEEDS))
+    with profile_lock(account) as held:  # not while a session has the account's browser open
+        if not held:
+            print(f"⚠️  @{account} is busy in another PRAG run; try again when it's done.")
+            return
+        try:
+            outcomes = asyncio.run(seed(account, handles, args.check))
+        except KeyboardInterrupt:
+            print("\n⏹  Stopped.")
+            return
     if outcomes:
         print("\n  " + " · ".join(f"{name}: {n}" for name, n in outcomes.most_common()))
 

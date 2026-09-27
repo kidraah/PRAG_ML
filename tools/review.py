@@ -1,5 +1,5 @@
 """
-FeedLab — Review Recorded Reels
+PRAG — Review Recorded Reels
 
 Sessions run with `main.py --observe` record every reel (caption, cover
 text, speech transcript) without judging it. This tool exports those

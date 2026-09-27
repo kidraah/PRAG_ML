@@ -1,5 +1,5 @@
 """
-FeedLab — Engagement Policy
+PRAG — Engagement Policy
 
 Turns a reel's value score into what a person with those interests would
 do: skip within a couple of seconds, watch part of it, or watch it

@@ -1,5 +1,5 @@
 """
-FeedLab — Appium Driver & Gesture Controller
+PRAG — Appium Driver & Gesture Controller
 
 Connects to an Android Emulator via Appium and provides:
   • Direct navigation to the Reels tab.

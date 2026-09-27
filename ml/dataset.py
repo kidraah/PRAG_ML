@@ -1,5 +1,5 @@
 """
-FeedLab — Labelled Reels as a Dataset
+PRAG — Labelled Reels as a Dataset
 
 Every scored impression is a labelled example: the reel's text (caption,
 cover text, speech transcript) and its value score. This module turns the

@@ -79,7 +79,7 @@ class ReviewTests(unittest.TestCase):
                                  {"session": sid, "code": "R2", "value_score": 0.5}])
         text = render(conn)
         self.assertIn("known before the reel appeared (preloaded feed data): 100%", text)  # ads don't count
-        self.assertIn("Quick rules vs review (2 reviewed reels)", text)
+        self.assertIn("Quick rules vs scores (2 scored reels the rules also judged)", text)
         self.assertIn("rules watched 1: 1 informative, 0 not · informative reels the rules skipped: 1 of 2", text)
 
 

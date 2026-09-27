@@ -1,5 +1,5 @@
 """
-FeedLab — Feed Capture (network JSON → reel metadata)
+PRAG — Feed Capture (network JSON → reel metadata)
 
 The Reels web app receives every reel as JSON before showing it: caption,
 creator, counts, a DASH manifest with a separate audio-only track, and the

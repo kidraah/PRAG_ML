@@ -13,3 +13,6 @@ debug/
 browser_profiles/
 digests/
 models/
+logs/
+biases/
+brag-output*/

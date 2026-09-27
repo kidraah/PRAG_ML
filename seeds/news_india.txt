@@ -1,4 +1,4 @@
-# Accounts a fresh FeedLab account follows before its first session, so its
+# Accounts a fresh PRAG account follows before its first session, so its
 # feed starts near config.INTERESTS instead of generic popular reels.
 # One handle per line; tools/follow_seed.py skips any that aren't verified.
 # All 11 checked as verified on 2026-09-26.

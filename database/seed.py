@@ -1,5 +1,5 @@
 """
-FeedLab — Account Seeder
+PRAG — Account Seeder
 
 Reads `accounts.json` from the project root and inserts each entry into
 the `accounts` table using INSERT OR IGNORE to avoid duplicates.

@@ -1,5 +1,5 @@
 """
-FeedLab — Two-Layer Alignment Evaluator
+PRAG — Two-Layer Alignment Evaluator
 
 Layer 1 (Eyes & Ears — Gemini API):
     Uploads the captured video to Gemini Flash for neutral sensory extraction.

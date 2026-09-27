@@ -1,5 +1,5 @@
 """
-FeedLab — Daily Digest
+PRAG — Daily Digest
 
 What you read instead of scrolling: the informative reels an account's
 agent saw in the last DIGEST_HOURS, grouped into stories, checked against
@@ -7,6 +7,7 @@ the news, and written to
 
     digests/<account>/<date>.html   the page to read
     digests/<account>/<date>.json   the same stories, for the dataset
+    digests/<account>/latest.html   always the newest page
 
     python -m stories.digest --account NAME [--hours 24] [--no-verify]
 """
@@ -91,6 +92,13 @@ def build_digest(conn: sqlite3.Connection, account: str, hours: float = DIGEST_H
 
 # ── Output ────────────────────────────────────────────────────────────
 
+def story_title(story: Story, check: Verification) -> str:
+    """The scorer's topic; for model-scored reels (no topic) the closest news headline when one was found."""
+    if not story.lead.topic and check.headlines:
+        return check.headlines[0].title
+    return story.title
+
+
 def to_json(digest: Digest) -> dict:
     def when(ts: datetime.datetime) -> str:
         return ts.astimezone(datetime.timezone.utc).isoformat(timespec="seconds")
@@ -103,7 +111,7 @@ def to_json(digest: Digest) -> dict:
                   "agent_minutes": round(digest.minutes, 1), "informative_reels": digest.informative_reels,
                   "stories": len(digest.stories)},
         "stories": [{
-            "title": s.title, "summary": s.summary, "score": s.score, "first_seen": when(s.first_seen),
+            "title": story_title(s, c), "summary": s.summary, "score": s.score, "first_seen": when(s.first_seen),
             "creators": s.creators,
             "reels": [{"code": r.code, "url": r.url, "creator": r.creator, "topic": r.topic, "summary": r.summary,
                        "value_score": r.value_score, "first_seen": when(r.first_seen)} for r in s.reels],
@@ -150,8 +158,10 @@ def _story_html(story: Story, check: Verification) -> str:
     seen = story.first_seen.astimezone().strftime("%d %b, %H:%M")
     reels = " · ".join(f'<a href="{e(r.url)}" target="_blank" rel="noopener">@{e(r.creator)}</a>' for r in story.reels)
     count = f"{len(story.reels)} reels" if len(story.reels) > 1 else "1 reel"
+    title = story_title(story, check)
+    summary = f"<p>{e(story.summary)}</p>" if story.summary and story.summary != title else ""
     return (
-        f'<article class="story"><h3>{e(story.title)}</h3><p>{e(story.summary)}</p>'
+        f'<article class="story"><h3>{e(title)}</h3>{summary}'
         f'<span class="badge {badge}">{e(check.label)}</span>'
         + (f'<ul class="news">{news}</ul>' if news else "")
         + f'<div class="meta">First seen {e(seen)} · {count}: {reels}</div></article>'
@@ -176,7 +186,7 @@ def render_html(digest: Digest) -> str:
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>FeedLab Digest</title><style>{PAGE_CSS}</style></head><body><main>"
+        f"<title>PRAG Digest</title><style>{PAGE_CSS}</style></head><body><main>"
         f"<header><h1>Digest for @{e(digest.account)}</h1><div class=\"stats\">{e(date)} · {e(stats)}</div></header>"
         f"{sections}"
         "<footer>Summaries come from the reels themselves. “Not in the news yet” means no news headline "
@@ -186,11 +196,14 @@ def render_html(digest: Digest) -> str:
 
 
 def write_digest(digest: Digest, out_dir: str = DIGEST_DIR) -> tuple[str, str]:
+    """digests/<account>/<date>.html and .json; latest.html is always the newest page (one to bookmark)."""
     folder = os.path.join(out_dir, digest.account)
     os.makedirs(folder, exist_ok=True)
     stem = os.path.join(folder, digest.generated_at.astimezone().strftime("%Y-%m-%d"))
-    with open(stem + ".html", "w") as fh:
-        fh.write(render_html(digest))
+    page = render_html(digest)
+    for name in (stem + ".html", os.path.join(folder, "latest.html")):
+        with open(name, "w") as fh:
+            fh.write(page)
     with open(stem + ".json", "w") as fh:
         json.dump(to_json(digest), fh, ensure_ascii=False, indent=1)
     return stem + ".html", stem + ".json"
@@ -216,7 +229,7 @@ def main() -> None:
     print(f"📰  @{account}: {len(digest.stories)} stories from {digest.informative_reels} informative reels "
           f"({digest.reels_seen} scrolled)")
     for story, check in zip(digest.stories, digest.checks):
-        print(f"  {story.score:.2f}  {story.title[:40]:40}  {len(story.reels)} reel(s)  · {check.label}")
+        print(f"  {story.score:.2f}  {story_title(story, check)[:40]:40}  {len(story.reels)} reel(s)  · {check.label}")
     print(f"\n  Page: {page}\n  Data: {data}")
 
 

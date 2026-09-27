@@ -1,5 +1,5 @@
 """
-FeedLab — Story Verification
+PRAG — Story Verification
 
 Checks whether a story seen on Reels is also covered by news outlets,
 using Google News' public RSS search (one or two queries per story, a
@@ -7,9 +7,11 @@ second apart):
 
 1. search for the story's distinctive words — names from its summary plus
    its topic label, without generic news words — back to the reel's
-   posting date;
-2. keep the headlines whose meaning is close to the story's summary
-   (the same sentence embeddings used for grouping).
+   posting date, and for the topic's own words too when that finds
+   little or nothing close;
+2. keep the headlines whose meaning is close to the story's summary or
+   its first clause — headlines state the gist, not the details (the
+   same sentence embeddings used for grouping).
 
 Word overlap alone was too brittle: headlines rarely repeat a reel's
 numbers or phrasing, and generic words ("Asian Games") matched unrelated
@@ -132,7 +134,7 @@ def parse_rss(xml_text: bytes | str) -> list[Article]:
 def search_news(query: str, days: int = VERIFY_DAYS) -> list[Article]:
     params = {"q": f"{query} when:{days}d", "hl": "en-IN", "gl": "IN", "ceid": "IN:en"}
     request = urllib.request.Request(f"{SEARCH_URL}?{urllib.parse.urlencode(params)}",
-                                     headers={"User-Agent": "Mozilla/5.0 (FeedLab digest)"})
+                                     headers={"User-Agent": "Mozilla/5.0 (PRAG digest)"})
     with urllib.request.urlopen(request, timeout=20) as resp:
         return parse_rss(resp.read())
 
@@ -151,34 +153,54 @@ def verify(
         return Verification("not_checked", query=" ".join(terms))
     query, days = " ".join(terms), search_window(taken_at, now)
     try:
-        articles = search(query, days)
-        if len(articles) < 5:  # too narrow: widen to the topic's words
-            broader = key_terms(topic, "")
-            if len(broader) >= 2 and broader != terms:
-                articles += search(" ".join(broader), days)
+        articles = _unique(search(query, days))
     except Exception:  # noqa: BLE001 — offline or rate-limited: say so rather than guess
         return Verification("not_checked", query=query)
-    unique: dict[tuple[str, str], Article] = {}
-    for article in articles:  # the broader search can return the same headline again
-        unique.setdefault((article.title.lower(), article.source), article)
-    articles = list(unique.values())
+    matched = close_headlines(summary, articles, embed_fn)
+    broader = key_terms(topic, "")
+    if (len(articles) < 5 or not matched) and len(broader) >= 2 and broader != terms:
+        try:  # too narrow, or nothing close: widen to the topic's words
+            articles = _unique(articles + search(" ".join(broader), days))
+            matched = close_headlines(summary, articles, embed_fn)
+        except Exception:  # noqa: BLE001 — keep what the first search found
+            pass
     if not articles:
         return Verification("reels_only", query=query)
-
-    vectors = embed_fn([summary] + [a.title for a in articles])
-    similarity = vectors[1:] @ vectors[0]
-    matched = []
-    for article, score in sorted(zip(articles, similarity), key=lambda x: -x[1]):
-        if score < VERIFY_SIMILARITY:
-            break
-        article.similarity = round(float(score), 2)
-        matched.append(article)
     outlets: list[str] = []
     for article in matched:
         if article.source and article.source not in outlets:
             outlets.append(article.source)
     status = "widely_reported" if len(outlets) >= 3 else "reported" if outlets else "reels_only"
     return Verification(status, query=query, outlets=outlets, headlines=matched[:3])
+
+
+def gist(summary: str) -> str:
+    """The summary's first clause: "X and Y traded charges at the UN, with X accusing …" → "X and Y traded charges at the UN"."""
+    first = re.split(r"(?<=[.!?])\s", summary, maxsplit=1)[0]
+    return re.split(r",\s(?:with|while|as|after|amid|which)\s|;\s", first, maxsplit=1)[0]
+
+
+def close_headlines(summary: str, articles: list[Article], embed_fn) -> list[Article]:
+    """Articles whose headline is close in meaning to the summary or its gist, closest first."""
+    if not articles:
+        return []
+    vectors = embed_fn([summary, gist(summary)] + [a.title for a in articles])
+    similarity = (vectors[2:] @ vectors[:2].T).max(axis=1)
+    matched = []
+    for article, score in sorted(zip(articles, similarity), key=lambda x: -x[1]):
+        if score < VERIFY_SIMILARITY:
+            break
+        article.similarity = round(float(score), 2)
+        matched.append(article)
+    return matched
+
+
+def _unique(articles: list[Article]) -> list[Article]:
+    """The broader search can return the same headline again."""
+    unique: dict[tuple[str, str], Article] = {}
+    for article in articles:
+        unique.setdefault((article.title.lower(), article.source), article)
+    return list(unique.values())
 
 
 def verify_all(stories, pause: float = 1.0, **kwargs) -> list[Verification]:

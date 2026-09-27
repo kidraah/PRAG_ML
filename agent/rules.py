@@ -1,10 +1,11 @@
 """
-FeedLab — Quick Rules (a stand-in scorer while the LLM is off)
+PRAG — Quick Rules (a stand-in scorer while the LLM is off)
 
 Scores a reel instantly from its feed data, so `main.py --rules` can steer
 in real time without LM Studio: reels from accounts this account follows,
-and reels whose caption or hashtags read like news, get watched; the rest
-are skipped. Deliberately crude — every reel is still recorded and
+and reels whose caption or hashtags have one of the bias's watch words
+(agent/bias.py; the news words in config.py by default), get watched; the
+rest are skipped. Deliberately crude — every reel is still recorded and
 reviewed afterwards, and the report shows how often the rules agreed with
 the review.
 """
@@ -30,29 +31,39 @@ class RuleVerdict:
     reason: str
 
 
-def news_word(caption: str, hashtags: list[str] | None = None) -> str | None:
-    """First NEWS_KEYWORDS match in the caption or hashtags, else None."""
+def news_word(caption: str, hashtags: list[str] | None = None, words=None) -> str | None:
+    """First watch word (`words`, default NEWS_KEYWORDS) in the caption or hashtags, else None.
+
+    Latin words match whole words and hashtags; Latin phrases ("supreme court") match as whole words in
+    order; other scripts (Devanagari) match anywhere.
+    """
+    latin = _LATIN_KEYWORDS if words is None else {w for w in words if w.isascii()}
+    other = _OTHER_KEYWORDS if words is None else sorted(w for w in words if not w.isascii())
     text = caption or ""
-    words = set(re.sub(r"[^a-z0-9\s]", " ", text.lower()).split()) | set(hashtags or [])
-    for word in sorted(words & _LATIN_KEYWORDS):
+    tokens = re.sub(r"[^a-z0-9\s]", " ", text.lower()).split()
+    for word in sorted((set(tokens) | set(hashtags or [])) & latin):
         return word
-    for keyword in _OTHER_KEYWORDS:
+    joined = f" {' '.join(tokens)} "
+    for phrase in sorted(p for p in latin if " " in p):
+        if f" {phrase} " in joined:
+            return phrase
+    for keyword in other:
         if keyword in text or any(keyword in tag for tag in hashtags or []):
             return keyword
     return None
 
 
-def rule_score(meta) -> RuleVerdict:
-    """Score a ReelMeta from its feed data alone (no audio, OCR or LLM)."""
+def rule_score(meta, bias=None) -> RuleVerdict:
+    """Score a ReelMeta from its feed data alone (no audio, OCR or LLM), for `bias` (default: config.py's)."""
     if meta.creator_following:
         return RuleVerdict(FOLLOWED_SCORE, f"follows @{meta.creator}")
-    gate = keyword_gate(meta.caption, meta.hashtags)
+    gate = keyword_gate(meta.caption, meta.hashtags, bias.skip_words if bias else None)
     if gate:
         return RuleVerdict(0.0, f"skip word: {gate}")
-    word = news_word(meta.caption, meta.hashtags)
+    word = news_word(meta.caption, meta.hashtags, bias.watch_words if bias else None)
     if word:
-        return RuleVerdict(NEWS_WORD_SCORE, f"news word: {word}")
+        return RuleVerdict(NEWS_WORD_SCORE, f"watch word: {word}")
     handle = (meta.creator or "").lower()
-    if any(hint in handle for hint in NEWS_CREATOR_HINTS):
-        return RuleVerdict(NEWS_CREATOR_SCORE, "news-like account name")
-    return RuleVerdict(DEFAULT_SCORE, "no news signal")
+    if any(hint in handle for hint in (bias.creator_hints if bias else NEWS_CREATOR_HINTS)):
+        return RuleVerdict(NEWS_CREATOR_SCORE, "account name looks relevant")
+    return RuleVerdict(DEFAULT_SCORE, "no watch signal")

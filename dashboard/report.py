@@ -1,5 +1,5 @@
 """
-FeedLab — Curation Report
+PRAG — Curation Report
 
 Answers "is the account curated yet?" from the impressions log:
   • the share of organic reels that are informative (value >= WATCH_THRESHOLD)
@@ -11,8 +11,8 @@ Answers "is the account curated yet?" from the impressions log:
 
 Each account has its own feed, so the report covers one account (by
 default the one used most recently). Only reels scored with the current
-prompt (INTERESTS included) and model are compared; change either and the
-trend starts over.
+prompt (the account's bias included) and model are compared; change either
+and the trend starts over.
 
     python -m dashboard.report [--account NAME] [--window 50] [--recent 8]
 """
@@ -22,6 +22,7 @@ import sqlite3
 import statistics
 from collections import Counter
 
+from agent.bias import load as load_bias
 from config import CURATION_TARGET_SHARE, CURATION_WINDOW, LIKE_THRESHOLD, WATCH_THRESHOLD
 from database.db import DB_PATH, get_connection
 
@@ -114,14 +115,15 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
     organic = [r for r in rows if not r["is_ad"]]
     judged = [r for r in rows if on_target(r) is not None]
 
-    out = [f"FeedLab — curation report for @{account}", "═" * 60]
+    out = [f"PRAG — curation report for @{account}", "═" * 60]
     others = [f"@{a['account']} ({a['n']} sessions)" for a in accounts if a["account"] != account]
     if others:
         out.append("Other accounts (see --account): " + ", ".join(others))
     older = len(all_rows) - len(rows)
     out.append(
-        f"Scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · {len(judged)} judged"
-        + (f"  ({older} reels scored with an older prompt/INTERESTS/model not compared)" if older else "")
+        f"Bias {load_bias(account).name} · scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · "
+        f"{len(judged)} judged"
+        + (f"  ({older} reels scored under another bias, prompt or model not compared)" if older else "")
     )
 
     awaiting = sum(r["score_basis"] == "observed" for r in rows)
@@ -187,14 +189,14 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
     if audits:
         missed = sum(bool(on_target(r)) for r in audits)
         out.append(f"Gate audit: {len(audits)} gated reels scored anyway — {missed} were informative "
-                   f"({missed / len(audits):.0%}); if this is high, loosen SKIP_KEYWORDS.")
+                   f"({missed / len(audits):.0%}); if this is high, remove some of the bias's skip words.")
 
     ruled = [r for r in rows if r["rule_score"] is not None and on_target(r) is not None]
     if ruled:
         watched = [r for r in ruled if r["rule_score"] >= WATCH_THRESHOLD]
         informative = [r for r in ruled if on_target(r)]
         hits = sum(bool(on_target(r)) for r in watched)
-        out += ["", f"Quick rules vs review ({len(ruled)} reviewed reels)",
+        out += ["", f"Quick rules vs scores ({len(ruled)} scored reels the rules also judged)",
                 f"  rules watched {len(watched)}: {hits} informative, {len(watched) - hits} not"
                 f" · informative reels the rules skipped: {len(informative) - hits} of {len(informative)}"]
 
@@ -232,7 +234,7 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Is the FeedLab account curated yet?")
+    parser = argparse.ArgumentParser(description="Is the PRAG account curated yet?")
     parser.add_argument("--account", help="Account to report on (default: the one used most recently)")
     parser.add_argument("--window", type=int, default=50, help="Reels per trend window")
     parser.add_argument("--recent", type=int, default=8, help="How many recent valuable reels to list")

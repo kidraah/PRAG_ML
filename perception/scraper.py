@@ -1,5 +1,5 @@
 """
-FeedLab — yt-dlp Media Extractor
+PRAG — yt-dlp Media Extractor
 
 Downloads Instagram Reel video + metadata using yt-dlp.
 Extracts caption, like/comment counts alongside the media file.

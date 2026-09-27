@@ -1,5 +1,5 @@
 """
-FeedLab — Story Grouping (the "Grouping" in P.R.A.G.)
+PRAG — Story Grouping (the "Aggregation" in PRAG)
 
 Several reels often report the same story (Aaj Tak and Indian Express on
 the same incident). Each informative reel's topic and summary is embedded
@@ -33,8 +33,8 @@ class Reel:
 
     @property
     def text(self) -> str:
-        """What gets embedded: the scorer's topic and one-line summary (English)."""
-        return f"{self.topic}. {self.summary or self.caption[:300]}"
+        """What gets embedded: the scorer's topic and one-line summary (English when the LLM scored it)."""
+        return ". ".join(part for part in (self.topic, self.summary or self.caption[:300]) if part)
 
 
 @dataclass
@@ -47,7 +47,8 @@ class Story:
 
     @property
     def title(self) -> str:
-        return self.lead.topic
+        """The scorer's topic label; model-scored reels have none, so the summary's opening words."""
+        return self.lead.topic or clip(self.summary or self.lead.caption, 70)
 
     @property
     def summary(self) -> str:
@@ -64,6 +65,11 @@ class Story:
     @property
     def creators(self) -> list[str]:
         return sorted({r.creator for r in self.reels})
+
+
+def clip(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def embed(texts: list[str]) -> np.ndarray:
