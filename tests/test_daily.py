@@ -142,6 +142,7 @@ class DailyTests(unittest.TestCase):
         scroll, notify, build = mock.AsyncMock(return_value=outcome), mock.Mock(), mock.Mock(return_value=digest)
         with mock.patch.multiple(daily, minutes_today=mock.Mock(return_value=used),
                                  engaged_today=mock.Mock(return_value=engaged), categorize_new=mock.DEFAULT,
+                                 update_feed_model=mock.DEFAULT,
                                  battery=mock.Mock(return_value=(False, None)), scroll=scroll,
                                  get_connection=mock.Mock(), build_digest=build,
                                  write_digest=mock.Mock(return_value=("/d/acct/2026-09-26.html", "/d/acct/x.json")),

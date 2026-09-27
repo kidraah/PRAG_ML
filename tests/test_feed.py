@@ -55,7 +55,7 @@ class PersonaScoringTests(unittest.TestCase):
         self.assertNotEqual(plain.fingerprint, persona.fingerprint)
         self.assertTrue(bias.validated(persona.to_dict()).persona)
         self.assertFalse(bias.validated({"interests": plain.interests}).persona)
-        template = bias.PRESETS["persona"]
+        template = bias.BUILT_IN["blank"]
         self.assertTrue(template.persona)
         self.assertEqual(bias.validated(template.to_dict()), template)
 
@@ -153,7 +153,8 @@ class FeedTests(unittest.TestCase):
                           "ELSE 'comedy_memes' END WHERE is_ad = 0")
         for patcher in (mock.patch.object(feed, "curated_since", lambda rows: report.curated_since(rows, 4, 0.5)),
                         mock.patch.object(feed, "load_bias", return_value=bias.Bias(name="Tester", interests="x" * 30,
-                                                                                     persona=True))):
+                                                                                     persona=True)),
+                        mock.patch.object(feed, "has_own_persona", return_value=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -168,12 +169,34 @@ class FeedTests(unittest.TestCase):
 
     def test_summary(self):
         info = feed.summary(self.conn, "acct")
-        self.assertEqual(info["bias"], {"name": "Tester", "persona": True})
+        self.assertEqual(info["bias"], {"name": "Tester", "persona": True, "own": True})
         self.assertTrue(info["curation"]["curated"])
         self.assertEqual(info["counts"], {"reels": 11, "ads": 1, "uncategorised": 0, "warm-up": 5, "curated": 6})
         self.assertEqual([r["seq"] for r in info["reels"]][:2], [11, 10])  # newest first
         self.assertEqual(info["reels"][1]["summary"], "caption 10")  # no summary: the caption stands in
         self.assertIn("promotion", info["categories"])
+
+    def test_every_account_side_by_side(self):
+        sid = _session(self.conn, account="other")
+        for seq in range(1, 4):  # a second persona's account: still warming up, and it shares a creator
+            _reel(self.conn, sid, seq, f"O{seq}", 0.1, creator="news_page" if seq == 1 else "dance_page")
+        self.conn.execute("UPDATE impressions SET category = 'music_dance' WHERE code LIKE 'O%'")
+        info = feed.summary_all(self.conn)
+        self.assertEqual([a["account"] for a in info["accounts"]], ["acct", "other"])  # most reels first
+        mine, other = info["accounts"]
+        self.assertEqual((mine["curated"], mine["mix_of"], mine["mix"]), (True, "curated", {"news_politics": 5}))
+        self.assertEqual((other["curated"], other["mix_of"], other["reels"]), (False, "all", 3))
+        self.assertEqual({k: info["counts"][k] for k in ("accounts", "curated_accounts", "reels", "curated")},
+                         {"accounts": 2, "curated_accounts": 1, "reels": 14, "curated": 6})
+        self.assertEqual(info["mix"]["warm-up"], {"news_politics": 1, "comedy_memes": 4, "music_dance": 3})
+        self.assertEqual(info["creators"][0]["accounts"], ["acct"])  # from the curated feeds
+        self.assertEqual({r["account"] for r in info["reels"]}, {"acct", "other"})
+        records = feed.dataset_all(self.conn)
+        self.assertEqual((len(records), {r["account"] for r in records}), (14, {"acct", "other"}))
+        self.assertEqual(len(feed.dataset_all(self.conn, curated_only=True)), 6)
+        with tempfile.TemporaryDirectory() as tmp:
+            path, count = feed.export(self.conn, None, fmt="jsonl", out_dir=tmp)
+            self.assertEqual((count, os.path.basename(os.path.dirname(path))), (14, "all"))
 
     def test_dataset_and_export(self):
         records = feed.dataset(self.conn, "acct", curated_only=True)

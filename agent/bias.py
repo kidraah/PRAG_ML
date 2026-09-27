@@ -1,23 +1,27 @@
 """
-PRAG — Biases: what each account curates towards
+PRAG — Personas: who each account scrolls as
 
-A bias is what the agent looks for on one account:
+A persona is a person described by a set of biases, and it's what the agent
+behaves like on one account:
 
-  interests      what the LLM scores every reel against ("what this
-                 person values" in its prompt)
+  interests      who the person is, what they watch to the end, like and
+                 follow, and what they scroll past (the LLM scores every
+                 reel against this)
   watch_words    caption / hashtag words that make the quick rules watch
   skip_words     caption / hashtag words that skip a reel instantly
   creator_hints  parts of account names that suggest a relevant page
   seeds          accounts to follow before the first session (optional)
-  persona        score reels by how likely the person described is to
-                 engage with them (their tastes and views), not by how
-                 informative they are: for studying what the algorithm feeds
-                 someone like that
+  persona        score reels by how likely that person is to watch them to
+                 the end and engage (true for every persona the panel saves);
+                 false only for the default below, which scores how
+                 informative a reel is
 
-Each account's bias is biases/<account>.json — the panel's Bias tab edits
-it — and an account without one uses the News (India) preset, which is
-config.py's settings. Changing the interests changes the scorer
-fingerprint, so the report only compares reels scored under one bias.
+Each account's persona is biases/<account>.json (the panel's Persona tab
+edits it). An account without one scrolls with the News (India) default,
+which is config.py's settings. The presets the tab starts from are
+editable: biases/presets.json once changed, BUILT_IN until then. Changing
+the persona changes the scorer fingerprint, so the report only compares
+reels scored under one persona. (In code a persona is still a Bias.)
 """
 
 import hashlib
@@ -101,7 +105,7 @@ def validated(data: dict) -> Bias:
     return Bias(name=name, interests=interests, seeds=seeds, persona=bool(data.get("persona")), **lists)
 
 
-# ── Presets ───────────────────────────────────────────────────────────
+# ── The default, and the persona presets ─────────────────────────────
 
 def _seed_file(name: str) -> list[str]:
     """Handles from seeds/<name>.txt: one per line, '#' starts a comment."""
@@ -112,123 +116,246 @@ def _seed_file(name: str) -> list[str]:
         return []
 
 
-_ENTERTAINMENT = sorted(SKIP_KEYWORDS)
-_NOT_GAMES = [w for w in _ENTERTAINMENT if w not in {"gaming", "pubg", "bgmi", "freefire", "valorant", "gamer"}]
+def _without(*drop: str) -> list[str]:
+    """The default skip words minus some: a persona mustn't instantly skip what it enjoys."""
+    return sorted(w for w in SKIP_KEYWORDS if w not in drop)
 
-PRESETS: dict[str, Bias] = {
-    "news-india": Bias(
-        name="News (India)",
-        interests=INTERESTS,
+
+def _person(text: str) -> str:
+    """A persona description: paragraphs kept, each on one line (it's edited in a text box)."""
+    return "\n\n".join(" ".join(paragraph.split()) for paragraph in text.strip().split("\n\n"))
+
+
+_GAMES = ("gaming", "pubg", "bgmi", "freefire", "valorant", "gamer")
+_HUMOUR = ("comedy", "funny", "meme", "memes", "standup")
+_DEVOTIONAL = ("bhakti", "bhajan", "mahadev", "harharmahadev", "bholenath", "hanumanji", "bajrangbali", "jaishreeram",
+               "radheradhe", "radhekrishna")
+_ASTROLOGY = ("astrology", "horoscope", "rashifal", "jyotish")
+
+# An account without a persona scrolls with this: config.py's News (India) interests, scored for how informative a
+# reel is. Its fingerprint is the one the fallback model was trained for, and older scores were judged under it.
+DEFAULT = "news-india"
+DEFAULT_BIAS = Bias(
+    name="News (India)",
+    interests=INTERESTS,
+    watch_words=sorted(NEWS_KEYWORDS),
+    skip_words=sorted(SKIP_KEYWORDS),
+    creator_hints=list(NEWS_CREATOR_HINTS),
+    seeds=_seed_file("news_india.txt"),
+)
+DEFAULT_FINGERPRINT = DEFAULT_BIAS.fingerprint
+
+# What the Persona tab starts from. Each one is a whole person, not a single interest, so the feed curates towards
+# what someone like them would really be shown. The panel edits a copy (biases/presets.json); these stay as they are.
+BUILT_IN: dict[str, Bias] = {
+    "news-follower": Bias(
+        name="News follower (India)",
+        persona=True,
+        interests=_person("""
+Who this person is: a 30-year-old office worker in Delhi who follows the news every day, in Hindi and English.
+Cares about politics and where the country is going without being loyal to any party, and about prices, jobs,
+exams and safety.
+
+What they watch to the end, like and follow: breaking news and current affairs from national news channels,
+newspapers and reporters; government decisions and new schemes; the economy, prices and the markets; court
+rulings; weather and safety alerts; space missions and science; explainers about how things work; cricket results.
+
+What they scroll past: memes, pranks, dance trends, celebrity gossip, astrology, motivational quotes, and anyone
+selling something.
+"""),
         watch_words=sorted(NEWS_KEYWORDS),
-        skip_words=_ENTERTAINMENT,
+        skip_words=sorted(SKIP_KEYWORDS),
         creator_hints=list(NEWS_CREATOR_HINTS),
         seeds=_seed_file("news_india.txt"),
     ),
-    "tech-ai": Bias(
-        name="Tech & AI",
-        interests="""
-I want to keep up with technology and AI without scrolling for hours.
+    "right-leaning": Bias(
+        name="Right-leaning voter (India)",
+        persona=True,
+        interests=_person("""
+Who this person is: a 38-year-old shop owner in Lucknow who speaks Hindi, is a practising Hindu, and supports the
+BJP and Prime Minister Narendra Modi. Proud of the armed forces and of India's development; family and tradition
+matter a lot to them.
 
-HIGH value (0.75-1.0): specific, new information, e.g.
-- AI models, products and research results, and what they can actually do
-- Launches and updates of apps, gadgets and developer tools, with real details
-- Big-tech and startup news: funding, acquisitions, layoffs, policy
-- Cybersecurity: breaches, scams and vulnerabilities, and what to do about them
-- Government rules and decisions about technology and AI
+What they watch to the end, like and follow: speeches and interviews of the Prime Minister and BJP leaders; news
+channels and commentators who share their views; the army and national security; new highways, railways and
+development projects; devotional content and temple festivals; cricket; Hindi comedy and family skits.
 
-MEDIUM value (0.40-0.74): useful but not new or not specific: explainers,
-tutorials, career advice for tech jobs, honest reviews, informed opinion.
+What they scroll past: speeches and commentary by opposition leaders, content that criticises the government or
+mocks religion, and English-language lifestyle and fashion content.
+"""),
+        watch_words=["modi", "narendra modi", "bjp", "yogi", "amit shah", "army", "indian army", "defence", "military",
+                     "hindu", "sanatan", "ram mandir", "ayodhya", "bharat", "vande bharat", "development",
+                     "infrastructure", "cricket", "मोदी", "भाजपा", "योगी", "सेना", "सनातन", "हिंदू", "राम मंदिर"],
+        skip_words=["makeup", "skincare", "cosmetics", "lipstick", "glowup", "fashion", "ootd", "outfit"],
+        creator_hints=["bjp", "modi", "bharat", "sanatan", "hindu", "yogi"],
+    ),
+    "left-leaning": Bias(
+        name="Left-leaning voter (India)",
+        persona=True,
+        interests=_person("""
+Who this person is: a 27-year-old postgraduate student in Kolkata who speaks Bengali, Hindi and English, and
+supports the Congress and other opposition parties. Cares about jobs, prices, farmers, civil liberties and
+minority rights; not religious.
 
-LOW value (0.00-0.39): no real information: hype and "top 10 AI tools"
-lists with nothing concrete, get-rich-quick, entertainment, memes, comedy,
-music, lifestyle, motivational quotes, devotional content, ads and
-self-promotion.
-""",
+What they watch to the end, like and follow: speeches and interviews of Rahul Gandhi and other opposition leaders;
+independent journalists and commentators who question the government; political satire and stand-up comedy;
+reports on unemployment, inflation, farmers and protests; climate and the environment; indie music; football and
+cricket.
+
+What they scroll past: pro-government and nationalist commentary, religious and devotional content, astrology,
+and get-rich-quick advice.
+"""),
+        watch_words=["rahul gandhi", "congress", "opposition", "democracy", "constitution", "unemployment",
+                     "inflation", "farmers", "protest", "satire", "standup", "climate", "football", "राहुल गांधी",
+                     "कांग्रेस", "बेरोजगारी", "महंगाई", "किसान", "संविधान"],
+        skip_words=sorted(_DEVOTIONAL + _ASTROLOGY),
+        creator_hints=["congress", "satire", "comedy", "standup"],
+    ),
+    "tech": Bias(
+        name="Tech enthusiast",
+        persona=True,
+        interests=_person("""
+Who this person is: a 24-year-old software engineer in Bengaluru who mostly watches in English and follows AI,
+gadgets and startups closely.
+
+What they watch to the end, like and follow: new AI models and tools and what they can actually do; phone and
+gadget launches, and reviews with real specs; coding tips; startup funding and big-tech news; cybersecurity scams
+and breaches; gaming news; clever tech memes; Formula 1.
+
+What they scroll past: politics, devotional content, astrology, dance trends and celebrity gossip.
+"""),
         watch_words=["ai", "chatgpt", "openai", "gemini", "claude", "llm", "gpt", "deepseek", "copilot", "startup",
                      "funding", "acquisition", "layoffs", "launch", "launched", "release", "update", "iphone",
                      "android", "apple", "google", "microsoft", "nvidia", "samsung", "chip", "semiconductor",
                      "cybersecurity", "hack", "hacked", "breach", "scam", "privacy", "robot", "robotics", "coding",
-                     "developer", "software", "tech", "technology", "gadget", "5g", "quantum"],
-        skip_words=_NOT_GAMES,  # game news can be tech news
+                     "developer", "software", "tech", "technology", "gadget", "5g", "quantum", "f1"],
+        skip_words=_without(*_GAMES, *_HUMOUR),
         creator_hints=["tech", "gadget", "geek", "coder", "coding", "digital", "cyber", "robot"],
     ),
-    "money-markets": Bias(
-        name="Money & markets",
-        interests="""
-I want to understand money, markets and the economy without scrolling for hours.
+    "investor": Bias(
+        name="Investor",
+        persona=True,
+        interests=_person("""
+Who this person is: a 42-year-old chartered accountant in Mumbai who invests in stocks and mutual funds, and
+watches in English and Hindi.
 
-HIGH value (0.75-1.0): specific, new information, e.g.
-- Market moves and the news behind them; company results, IPOs, mergers
-- RBI, SEBI and government decisions: interest rates, taxes, GST, new rules
-- Changes to banking, loans, UPI, insurance, pensions and savings schemes
-- Prices that affect people: fuel, gold, food, inflation
-- Financial scams and frauds to watch out for
+What they watch to the end, like and follow: market moves and company results; RBI and SEBI decisions; tax, GST
+and budget changes; personal-finance explainers; business news and interviews with founders; property and gold
+prices.
 
-MEDIUM value (0.40-0.74): useful but not new: explainers on tax, investing
-and personal finance, analysis and informed opinion on the economy.
-
-LOW value (0.00-0.39): no real information: stock tips and "guaranteed
-returns" without evidence, trading-course and app promotions, luxury
-lifestyle, motivational quotes, entertainment, memes, devotional content,
-ads and self-promotion.
-""",
+What they scroll past: memes, dance trends, devotional content, celebrity gossip, and trading courses that promise
+guaranteed returns.
+"""),
         watch_words=["sensex", "nifty", "stock", "stocks", "shares", "market", "ipo", "rbi", "sebi", "repo", "gst",
-                     "tax", "itr", "budget", "inflation", "gdp", "economy", "rupee", "gold", "silver", "petrol",
-                     "diesel", "loan", "emi", "bank", "banking", "upi", "mutualfund", "sip", "insurance", "pension",
-                     "epfo", "results", "earnings", "scam", "fraud", "बाजार", "शेयर", "टैक्स", "महंगाई", "बैंक",
-                     "लोन", "सोना"],
-        skip_words=_ENTERTAINMENT,
-        creator_hints=["finance", "money", "market", "stock", "invest", "wealth", "capital", "economic",
-                       "business", "mint"],
+                     "tax", "itr", "budget", "inflation", "gdp", "economy", "rupee", "gold", "silver", "loan", "emi",
+                     "bank", "banking", "upi", "mutualfund", "sip", "insurance", "pension", "results", "earnings",
+                     "बाजार", "शेयर", "टैक्स", "महंगाई", "बैंक", "सोना"],
+        skip_words=sorted(SKIP_KEYWORDS),
+        creator_hints=["finance", "money", "market", "stock", "invest", "wealth", "capital", "economic", "business"],
     ),
     "science-health": Bias(
-        name="Science & health",
-        interests="""
-I want to keep up with science, space and health without scrolling for hours.
+        name="Science & health reader",
+        persona=True,
+        interests=_person("""
+Who this person is: a 33-year-old doctor in Pune who watches in English and Marathi and trusts evidence over hype.
 
-HIGH value (0.75-1.0): specific, new information, e.g.
-- Research findings and discoveries, and who made them
-- Space missions and launches (ISRO, NASA and others)
-- Health advisories and outbreaks from health authorities; new treatments
-  and approvals
-- Climate, extreme weather and the environment
+What they watch to the end, like and follow: research findings and discoveries; ISRO and NASA missions; health
+advisories and new treatments; evidence-based fitness and nutrition; climate and wildlife; explainers about how the
+body and the universe work.
 
-MEDIUM value (0.40-0.74): useful but not new: explainers and general
-knowledge, how things work, evidence-based health and nutrition advice.
-
-LOW value (0.00-0.39): no real information: miracle cures and health claims
-without evidence, supplement and product promotion, fitness influencer
-content, pseudoscience, entertainment, memes, motivational quotes,
-devotional content and astrology.
-""",
+What they scroll past: miracle cures, supplement promotions, pseudoscience and astrology, politics and memes.
+"""),
         watch_words=["science", "scientists", "research", "discovery", "isro", "nasa", "space", "mission",
-                     "satellite", "rocket", "moon", "mars", "chandrayaan", "gaganyaan", "vaccine", "virus",
-                     "outbreak", "icmr", "disease", "cancer", "health", "medicine", "doctor", "climate", "earthquake",
-                     "cyclone", "heatwave", "flood", "wildlife", "fossil", "dna", "विज्ञान", "अंतरिक्ष", "इसरो",
-                     "बीमारी", "स्वास्थ्य"],
-        skip_words=_ENTERTAINMENT,
+                     "satellite", "rocket", "moon", "mars", "vaccine", "virus", "outbreak", "icmr", "disease",
+                     "cancer", "health", "medicine", "doctor", "nutrition", "climate", "wildlife", "fossil", "dna",
+                     "विज्ञान", "अंतरिक्ष", "इसरो", "बीमारी", "स्वास्थ्य"],
+        skip_words=_without("fitness", "workout", "gym"),
         creator_hints=["science", "space", "health", "doctor", "research", "nature", "isro", "nasa", "physics",
                        "biology"],
     ),
-    "persona": Bias(
-        name="Persona (fill in)",
+    "blank": Bias(
+        name="Blank persona (fill in)",
         persona=True,
-        interests="""
+        interests=_person("""
 Who this person is: [age, where they live, languages, work, religion, politics, what they care about].
 
 What they watch to the end, like and follow: [the news and opinions they agree with, the pages they trust,
 sports, humour, faith, local issues, hobbies: describe the whole person, not just one side of them].
 
 What they scroll past: [content they find boring or disagree with].
-""",
+"""),
     ),
 }
-DEFAULT_FINGERPRINT = PRESETS[DEFAULT].fingerprint
+
+PRESET_KEY = re.compile(r"[a-z0-9-]{1,48}")
+
+
+def presets_path() -> str:
+    return os.path.join(BIAS_DIR, "presets.json")
+
+
+def presets() -> dict[str, Bias]:
+    """The presets the Persona tab offers: the edited set in biases/presets.json, or the built-in ones."""
+    try:
+        with open(presets_path()) as fh:
+            stored = json.load(fh)
+    except FileNotFoundError:
+        return dict(BUILT_IN)
+    except (OSError, ValueError) as exc:
+        print(f"⚠️  {presets_path()} can't be used ({exc}); using the built-in presets.")
+        return dict(BUILT_IN)
+    out: dict[str, Bias] = {}
+    for key, data in (stored.items() if isinstance(stored, dict) else []):
+        try:
+            if PRESET_KEY.fullmatch(key) and isinstance(data, dict):
+                out[key] = validated({**data, "persona": True})
+        except ValueError:
+            continue  # one broken preset doesn't hide the others
+    return out
+
+
+def _write_presets(items: dict[str, Bias]) -> None:
+    os.makedirs(BIAS_DIR, exist_ok=True)
+    path = presets_path()
+    with open(path + ".tmp", "w") as fh:
+        json.dump({key: bias.to_dict() for key, bias in items.items()}, fh, ensure_ascii=False, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def save_preset(bias: Bias, key: str | None = None) -> str:
+    """Keep a persona as a preset: a new one named after it (no key), or in place of preset `key`."""
+    items = presets()
+    if key is None:
+        base = re.sub(r"[^a-z0-9]+", "-", bias.name.lower()).strip("-")[:40] or "persona"
+        key, n = base, 2
+        while key in items:
+            key, n = f"{base}-{n}", n + 1
+    elif key not in items:
+        raise ValueError("That preset isn't there any more: save it as a new one.")
+    items[key] = Bias(**{**bias.to_dict(), "persona": True})
+    _write_presets(items)
+    return key
+
+
+def delete_preset(key: str) -> None:
+    items = presets()
+    if key not in items:
+        raise ValueError("That preset isn't there any more.")
+    del items[key]
+    _write_presets(items)
+
+
+def restore_presets() -> None:
+    """Back to the built-in presets (the edited ones are dropped)."""
+    try:
+        os.remove(presets_path())
+    except FileNotFoundError:
+        pass
 
 
 def preset_for(bias: Bias) -> str | None:
-    """The preset whose interests this bias uses, if any."""
-    return next((key for key, preset in PRESETS.items() if preset.fingerprint == bias.fingerprint), None)
+    """The preset this bias is, if any."""
+    return next((key for key, preset in presets().items() if preset.fingerprint == bias.fingerprint), None)
 
 
 # ── Each account's bias ───────────────────────────────────────────────
@@ -249,8 +376,8 @@ def load(account: str | None) -> Bias:
         except FileNotFoundError:
             pass
         except (OSError, ValueError) as exc:
-            print(f"⚠️  {path} can't be used ({exc}); using the {PRESETS[DEFAULT].name} bias.")
-    return PRESETS[DEFAULT]
+            print(f"⚠️  {path} can't be used ({exc}); using the {DEFAULT_BIAS.name} bias.")
+    return DEFAULT_BIAS
 
 
 def has_own(account: str) -> bool:

@@ -114,7 +114,7 @@ class ModelBiasTests(unittest.TestCase):
     def test_a_model_only_scores_for_the_bias_it_was_trained_for(self):
         import joblib
 
-        default, tech = bias.PRESETS[bias.DEFAULT], bias.PRESETS["tech-ai"]
+        default, tech = bias.DEFAULT_BIAS, bias.BUILT_IN["tech"]
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(train, "MODEL_DIR", tmp):
             path = train.train_and_save("embedding", synthetic(), {}, embed_fn=fake_embed)
             self.assertTrue(ModelScorer.available(path, bias=default))
@@ -127,10 +127,11 @@ class ModelBiasTests(unittest.TestCase):
             self.assertFalse(ModelScorer.available(older, bias=tech))
 
     def test_which_bias_a_scorers_labels_came_from(self):
-        tech = bias.PRESETS["tech-ai"]
+        tech = bias.BUILT_IN["tech"]
         with mock.patch.object(train, "list_accounts", return_value=[]):
             self.assertEqual(train.bias_of_scorer("review"), bias.DEFAULT_FINGERPRINT)
-            self.assertEqual(train.bias_of_scorer(scorer_version(tech.interests)), tech.fingerprint)
+            self.assertEqual(train.bias_of_scorer(scorer_version(tech.interests, tech.persona)), tech.fingerprint)
+            self.assertEqual(train.bias_of_scorer(scorer_version()), bias.DEFAULT_FINGERPRINT)
             self.assertIsNone(train.bias_of_scorer("0000ffff"))
 
 

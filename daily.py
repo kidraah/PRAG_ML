@@ -53,6 +53,7 @@ from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, DIGEST_HOURS, ENGAGEMENT
 from database.db import (
     choose_account, engaged_today, get_connection, init_db, list_accounts, minutes_today, reset_cooldown_accounts,
 )
+from ml import feed_model
 from ml.scorer import ModelScorer
 from perception.categorize import categorize_pending
 from perception.local_evaluator import llm_serving
@@ -149,6 +150,20 @@ def categorize_new(account: str) -> None:
         conn.close()
 
 
+def update_feed_model() -> None:
+    """Relearn the feed's topics with the new reels, every account's (never fails the run)."""
+    conn = get_connection()
+    try:
+        model = feed_model.train(conn, progress=lambda message: None)
+        if model:
+            print(f"\n🧠  Feed model: {model['k']} topics from {model['reels']} reels across "
+                  f"{len(model['accounts'])} accounts.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n⚠️  Couldn't update the feed model: {exc}")
+    finally:
+        conn.close()
+
+
 # ── Output ────────────────────────────────────────────────────────────
 
 class Tee:
@@ -234,6 +249,7 @@ def daily(args: argparse.Namespace, account: str) -> int:
                 return 130
 
     categorize_new(account)
+    update_feed_model()
     print(f"\n📰  Building the digest for the last {DIGEST_HOURS} h (checking stories against the news) …")
     conn = get_connection()
     try:

@@ -18,6 +18,7 @@ import re
 import shutil
 import sqlite3
 
+from agent.bias import has_own as has_own_bias
 from agent.bias import load as load_bias
 from automation.browser_driver import profile_dir, profile_lock
 from database.db import get_connection
@@ -100,6 +101,7 @@ def overview(conn: sqlite3.Connection | None = None, path: str = ACCOUNTS_JSON) 
             "last_used": last_used,
             "reels": reels.get(name, 0),
             "bias": load_bias(name).name,
+            "persona_set": has_own_bias(name),  # False: it scrolls with the default until given a persona
             "login_saved": os.path.isdir(profile_dir(name)),
         })
     return out

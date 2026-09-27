@@ -33,20 +33,51 @@ class BiasTests(unittest.TestCase):
 
     def test_default_is_config_and_keeps_its_fingerprint(self):
         default = bias.load("no_such_account")
-        self.assertIs(default, bias.PRESETS[bias.DEFAULT])
+        self.assertIs(default, bias.DEFAULT_BIAS)
+        self.assertFalse(default.persona)  # the default scores how informative a reel is
         self.assertEqual(default.interests, config.INTERESTS.strip())
         self.assertEqual(set(default.watch_words), config.NEWS_KEYWORDS)
         self.assertEqual(set(default.skip_words), config.SKIP_KEYWORDS)
         self.assertEqual(scorer_version(default.interests), scorer_version())  # old scores stay comparable
         self.assertIn("ndtv", default.seeds)
 
-    def test_presets_are_valid(self):
-        for key, preset in bias.PRESETS.items():
+    def test_presets_are_valid_personas(self):
+        self.assertEqual(bias.presets(), bias.BUILT_IN)  # nothing edited yet
+        for key, preset in bias.BUILT_IN.items():
             with self.subTest(key):
+                self.assertTrue(preset.persona)
                 self.assertEqual(bias.validated(preset.to_dict()), preset)
                 self.assertEqual(bias.preset_for(preset), key)
-        fingerprints = {preset.fingerprint for preset in bias.PRESETS.values()}
-        self.assertEqual(len(fingerprints), len(bias.PRESETS))
+                self.assertTrue(bias.PRESET_KEY.fullmatch(key))
+        fingerprints = {preset.fingerprint for preset in bias.BUILT_IN.values()} | {bias.DEFAULT_FINGERPRINT}
+        self.assertEqual(len(fingerprints), len(bias.BUILT_IN) + 1)
+        # a persona mustn't skip at once what its description says it enjoys
+        self.assertNotIn("jaishreeram", bias.BUILT_IN["right-leaning"].skip_words)
+        self.assertNotIn("standup", bias.BUILT_IN["left-leaning"].skip_words)
+        self.assertNotIn("memes", bias.BUILT_IN["tech"].skip_words)
+        self.assertNotIn("fitness", bias.BUILT_IN["science-health"].skip_words)
+
+    def test_edit_presets(self):
+        mine = bias.Bias(name="Cricket fan", interests="A cricket fan from Pune who watches every IPL highlight.")
+        key = bias.save_preset(mine)
+        self.assertEqual(key, "cricket-fan")
+        self.assertTrue(bias.presets()[key].persona)  # every preset is a persona
+        self.assertEqual(list(bias.presets())[:len(bias.BUILT_IN)], list(bias.BUILT_IN))  # the rest are kept
+        self.assertEqual(bias.save_preset(mine), "cricket-fan-2")  # the same name again: a second preset
+        edited = bias.Bias(name="Tech fan", interests="Someone who watches every phone launch and AI demo.")
+        self.assertEqual(bias.save_preset(edited, key="tech"), "tech")
+        self.assertEqual(bias.presets()["tech"].name, "Tech fan")
+        self.assertEqual(bias.BUILT_IN["tech"].name, "Tech enthusiast")  # the built-in one is untouched
+        bias.delete_preset("blank")
+        self.assertNotIn("blank", bias.presets())
+        for broken in (lambda: bias.delete_preset("blank"), lambda: bias.save_preset(mine, key="gone")):
+            with self.assertRaisesRegex(ValueError, "isn't there any more"):
+                broken()
+        bias.restore_presets()
+        self.assertEqual(bias.presets(), bias.BUILT_IN)
+        with open(bias.presets_path(), "w") as fh:
+            fh.write('{"ok": {"name": "Fine", "interests": "A reader of long science explainers."}, "bad": {}}')
+        self.assertEqual(list(bias.presets()), ["ok"])  # a broken preset doesn't hide the others
 
     def test_words(self):
         self.assertEqual(bias.words("AI, #ChatGPT\nखबर, ai,  , @ndtv"), ["ai", "chatgpt", "खबर", "ndtv"])
@@ -78,7 +109,7 @@ class BiasTests(unittest.TestCase):
         with open(path, "w") as fh:
             fh.write("{broken")
         with redirect_stdout(StringIO()) as out:
-            self.assertIs(bias.load("acct"), bias.PRESETS[bias.DEFAULT])  # a broken file falls back, loudly
+            self.assertIs(bias.load("acct"), bias.DEFAULT_BIAS)  # a broken file falls back, loudly
         self.assertIn("can't be used", out.getvalue())
 
 

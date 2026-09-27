@@ -67,6 +67,7 @@ class AccountsTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(items))
         self.assertNotIn("old-pass", json.dumps(items))
         self.assertEqual((items["old_acct"]["reels"], items["old_acct"]["login_saved"]), (0, False))
+        self.assertFalse(items["old_acct"]["persona_set"])  # scrolls with the default until given a persona
 
     def test_set_and_forget_a_password(self):
         accounts.set_password("old_acct", "new-pass", **self.kw)

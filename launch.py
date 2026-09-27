@@ -35,6 +35,7 @@ import daily
 from agent import bias as biases
 from automation import prompt
 from dashboard import feed as feed_study
+from ml import feed_model
 from database import accounts as account_store
 from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, MIN_BATTERY, SESSION_MINUTES
 from database.db import engaged_today, get_connection, init_db, list_accounts, minutes_today
@@ -99,7 +100,7 @@ def account_status(account: str) -> dict:
         "mixed_next": "dry run (today's live session already ran)" if engaged else "live (first session today)",
         "battery": {"on_battery": on_battery, "charge": charge},
         "skip": daily.skip_reason(account, used, on_battery, charge),
-        "bias": {"name": bias.name, "persona": bias.persona},
+        "bias": {"name": bias.name, "persona": bias.persona, "own": biases.has_own(account)},
     }
 
 
@@ -133,17 +134,19 @@ def digest_data(account: str, date: str | None) -> dict:
 
 
 def bias_info(account: str) -> dict:
-    current = biases.load(account)
+    current, presets = biases.load(account), biases.presets()
     trained = ModelScorer.trained_for()
-    model_bias = next((b for b in [current, *biases.PRESETS.values()] if b.fingerprint == trained), None)
+    model_bias = next((b for b in [current, biases.DEFAULT_BIAS, *presets.values(), *biases.BUILT_IN.values()]
+                       if b.fingerprint == trained), None)
     return {
         "bias": current.to_dict(),
         "own": biases.has_own(account),
-        "presets": {key: preset.to_dict() for key, preset in biases.PRESETS.items()},
+        "presets": {key: preset.to_dict() for key, preset in presets.items()},
+        "presets_edited": os.path.exists(biases.presets_path()),
         "model_interests": model_bias.interests if model_bias else None,  # the fallback model scores only for these
         "model_name": model_bias.name if model_bias else None,
         "model_persona": model_bias.persona if model_bias else False,
-        "default_name": biases.PRESETS[biases.DEFAULT].name,
+        "default_name": biases.DEFAULT_BIAS.name,
     }
 
 
@@ -353,8 +356,11 @@ class Panel(BaseHTTPRequestHandler):
             return self._json({"error": "Expected a JSON object"}, 400)
         self._handle({"/api/run": self.run, "/api/stop": self.stop, "/api/open": self.open_folder,
                       "/api/prompt": self.answer_prompt, "/api/bias": self.save_bias, "/api/seed": self.seed,
-                      "/api/feed/categorize": self.categorize, "/api/accounts/add": self.add_account,
+                      "/api/feed/categorize": self.categorize, "/api/feed/model": self.train_feed_model,
+                      "/api/accounts/add": self.add_account,
                       "/api/accounts/password": self.account_password, "/api/accounts/delete": self.delete_account,
+                      "/api/presets/save": self.save_preset, "/api/presets/delete": self.delete_preset,
+                      "/api/presets/restore": self.restore_presets,
                       "/api/schedule/install": self.install_schedule,
                       "/api/schedule/remove": self.remove_schedule}, url.path, body)
 
@@ -404,30 +410,34 @@ class Panel(BaseHTTPRequestHandler):
         return bias_info(checked_account(query.get("account")))
 
     def feed(self, query: dict) -> dict:
-        account = checked_account(query.get("account"))
+        """One account's feed, or (scope=all) every account's side by side; with the feed model's topics."""
+        account = None if query.get("scope") == "all" else checked_account(query.get("account"))
         conn = get_connection()
         try:
-            return feed_study.summary(conn, account)
+            info = feed_study.summary(conn, account) if account else feed_study.summary_all(conn)
+            info["topics"] = feed_model.analysis(conn, account)
+            return info
         finally:
             conn.close()
 
     def _feed_export(self, query: dict) -> None:
         """The account's dataset as a download: the curated feed or everything, as JSONL or CSV."""
         try:
-            account = checked_account(query.get("account"))
+            account = None if query.get("scope") == "all" else checked_account(query.get("account"))
             fmt = query.get("format", "jsonl")
             if fmt not in ("jsonl", "csv"):
                 raise ValueError("format must be jsonl or csv")
             curated = query.get("phase", "curated") == "curated"
             conn = get_connection()
             try:
-                records = feed_study.dataset(conn, account, curated_only=curated)
+                records = (feed_study.dataset(conn, account, curated_only=curated) if account
+                           else feed_study.dataset_all(conn, curated_only=curated))
             finally:
                 conn.close()
         except ValueError as exc:
             return self._json({"error": str(exc)}, 400)
         body = feed_study.to_jsonl(records) if fmt == "jsonl" else feed_study.to_csv(records)
-        name = f"{account}-{'curated' if curated else 'all'}.{fmt}"
+        name = f"{account or 'all-accounts'}-{'curated' if curated else 'all'}.{fmt}"
         self._send(200, body, "application/x-ndjson; charset=utf-8" if fmt == "jsonl" else "text/csv; charset=utf-8",
                    {"Content-Disposition": f'attachment; filename="{name}"'})
 
@@ -450,8 +460,30 @@ class Panel(BaseHTTPRequestHandler):
 
     def save_bias(self, body: dict) -> dict:
         account = checked_account(body.get("account"))
-        biases.save(account, biases.validated(body))
+        biases.save(account, biases.validated({**body, "persona": True}))
         return bias_info(account)
+
+    @staticmethod
+    def _presets(key: str | None = None) -> dict:
+        return {"key": key, "presets": {k: p.to_dict() for k, p in biases.presets().items()},
+                "presets_edited": os.path.exists(biases.presets_path())}
+
+    def save_preset(self, body: dict) -> dict:
+        key = body.get("key")
+        if key is not None and not biases.PRESET_KEY.fullmatch(str(key)):
+            raise ValueError("Unknown preset")
+        preset = body.get("preset")
+        if not isinstance(preset, dict):
+            raise ValueError("Expected the persona to keep as a preset")
+        return self._presets(biases.save_preset(biases.validated({**preset, "persona": True}), key))
+
+    def delete_preset(self, body: dict) -> dict:
+        biases.delete_preset(str(body.get("key", "")))
+        return self._presets()
+
+    def restore_presets(self, _body: dict) -> dict:
+        biases.restore_presets()
+        return self._presets()
 
     def account_list(self, _query: dict) -> dict:
         return {"items": account_store.overview()}
@@ -480,11 +512,14 @@ class Panel(BaseHTTPRequestHandler):
         return self.runner._launch([sys.executable, "-m", "dashboard.feed", "--account", account, "--categorize"],
                                    f"Categorising reels for @{account}")
 
+    def train_feed_model(self, _body: dict) -> dict:
+        return self.runner._launch([sys.executable, "-m", "ml.feed_model", "--train"], "Training the feed model")
+
     def seed(self, body: dict) -> dict:
         account = checked_account(body.get("account"))
         handles = biases.load(account).seeds
         if not handles:
-            raise ValueError("Add accounts to follow first, and save the bias.")
+            raise ValueError("Add accounts to follow first, and save the persona.")
         return self.runner.start_seed(account, handles, bool(body.get("check_only")))
 
     def answer_prompt(self, body: dict) -> dict:
@@ -864,6 +899,14 @@ table.data th.num { font: 500 10px var(--display); letter-spacing: 1.2px; }
 .reel-row .when { color: var(--muted); font: 12px var(--mono); }
 .reel-row .num { display: flex; gap: 12px; justify-content: flex-end; color: var(--muted); font: 12px var(--mono); }
 .reel-row a { overflow-wrap: anywhere; }
+#feed-scope { margin-bottom: 16px; }
+h4.sub { font: 500 11px/1.3 var(--display); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); margin: 28px 0 8px; }
+ul.plain { list-style: none; margin: 8px 0 0; padding: 0; }
+#alike th { font: 700 14px var(--body); letter-spacing: 0; text-transform: none; color: var(--text); }
+ul.plain li { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid var(--rule); }
+ul.plain li b { font: 500 13px var(--mono); white-space: nowrap; }
+.reel-row .when .to { display: block; font: 500 12px var(--body); color: var(--text); }
+.tip .note { color: var(--muted); margin: -2px 0 6px; }
 .tag-cat { font: 500 9.5px/1.4 var(--display); letter-spacing: .8px; text-transform: uppercase; padding: 3px 8px;
            border: 1px solid var(--line); white-space: nowrap; }
 
@@ -949,7 +992,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <button class="nav-btn" data-tab="feed" title="Feed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="btn-text">Feed</span></button>
         <button class="nav-btn" data-tab="digest" title="Digest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg><span class="btn-text">Digest</span></button>
         <button class="nav-btn" data-tab="report" title="Report"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span class="btn-text">Report</span></button>
-        <button class="nav-btn" data-tab="bias" title="Bias"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg><span class="btn-text">Bias</span></button>
+        <button class="nav-btn" data-tab="bias" title="Persona"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.75a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zm6 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/></svg><span class="btn-text">Persona</span></button>
         <button class="nav-btn" data-tab="schedule" title="Schedule"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span class="btn-text">Schedule</span></button>
         <button class="nav-btn" data-tab="accounts" title="Accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg><span class="btn-text">Accounts</span></button>
       </nav>
@@ -969,7 +1012,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
       <div class="island">
         <span class="island-label">Account</span>
         <select id="account" aria-label="Account"></select>
-        <button class="text-btn" id="bias-pill" title="Edit the bias" hidden></button>
+        <button class="text-btn" id="bias-pill" title="Edit the persona" hidden></button>
       </div>
       <div class="island">
         <span class="island-label">System</span>
@@ -1032,6 +1075,10 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
 
       <section id="tab-feed" hidden>
         <div class="card">
+          <div class="seg small" id="feed-scope" role="radiogroup" aria-label="Whose feed">
+            <label><input type="radio" name="feed-scope" value="account" checked> This account</label>
+            <label><input type="radio" name="feed-scope" value="all"> All accounts</label>
+          </div>
           <h2 class="headline" id="feed-state">Loading…</h2>
           <p class="lede" id="feed-curation"></p>
           <p class="notice" id="feed-uncat" hidden></p>
@@ -1042,6 +1089,12 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
             <button class="btn" id="btn-categorize">Categorise now</button>
           </div>
         </div>
+        <div class="card" id="personas-card" hidden>
+          <h3>Each persona's feed</h3>
+          <p class="hint">Every account scrolls as its own persona. "Top of its feed" is the curated feed once there is
+            one, and everything so far until then.</p>
+          <div class="table-scroll"><table class="data" id="personas"></table></div>
+        </div>
         <div class="card">
           <h3>What the feed shows</h3>
           <p class="hint" id="mix-sub"></p>
@@ -1050,13 +1103,42 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
           <details><summary class="hint">Show as a table</summary><table class="data" id="mix-table"></table></details>
         </div>
         <div class="card">
+          <div class="status"><h3>Topics the algorithm serves</h3><span class="spacer"></span>
+            <button class="btn" id="btn-train">Retrain now</button></div>
+          <p class="hint" id="topics-sub"></p>
+          <div id="topics-body" hidden>
+            <p class="hint">The feed model learns these from every account's reels together, so each persona's feed
+              is described in the same topics and can be compared.</p>
+            <div class="legend" id="topic-legend"></div>
+            <div class="chart" id="topic-chart"></div>
+            <details><summary class="hint">Show as a table</summary><table class="data" id="topic-table"></table></details>
+            <div class="two">
+              <div>
+                <h4 class="sub">How narrow the feed is</h4>
+                <p id="narrow"></p>
+                <div class="table-scroll"><table class="data" id="days"></table></div>
+              </div>
+              <div>
+                <div id="rising-box"><h4 class="sub">Rising</h4>
+                  <p class="hint">More of these in the last three days than before.</p><ul class="plain" id="rising"></ul></div>
+                <div id="apart-box"><h4 class="sub">What sets this persona apart</h4>
+                  <p class="hint">Topics it's served more than the accounts overall.</p><ul class="plain" id="apart"></ul></div>
+                <div id="alike-box"><h4 class="sub">How alike the feeds are</h4>
+                  <p class="hint">How much each pair of accounts' feeds share: 100% is the same mix of topics, 0% is
+                    nothing in common.</p><div class="table-scroll"><table class="data" id="alike"></table></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
           <h3>Creators the feed serves most</h3>
           <p class="hint" id="creators-sub"></p>
           <div class="table-scroll"><table class="data" id="creators"></table></div>
         </div>
         <div class="card">
           <h3>Every reel shown</h3>
-          <div class="row"><select id="f-cat" aria-label="Category"></select>
+          <div class="row"><select id="f-acct" aria-label="Account" hidden></select>
+            <select id="f-cat" aria-label="Category"></select>
             <select id="f-phase" aria-label="Phase"><option value="">Warm-up and curated</option>
               <option value="curated">Curated feed only</option><option value="warm-up">Warm-up only</option></select>
             <span class="hint" id="f-count"></span></div>
@@ -1085,42 +1167,43 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
           <div class="status"><h2 class="headline" id="bias-title">Loading…</h2>
             <span class="badge warn" id="bias-dirty" hidden>Unsaved changes</span></div>
           <p class="hint" id="bias-state"></p>
-          <div class="field"><div class="name">Start from</div>
-            <p class="hint">A preset only fills in the form below; nothing changes until you save.</p>
-            <div class="presets" id="presets"></div></div>
+          <div class="field"><div class="name">Presets</div>
+            <p class="hint">Picking one fills in the form below; nothing changes until you save. The presets are yours
+              to edit: keep what's in the form as a new preset, or update or delete the one you picked.</p>
+            <div class="presets" id="presets"></div>
+            <div class="actions quiet">
+              <button class="linkish" id="btn-preset-new">Save as a new preset</button>
+              <button class="linkish" id="btn-preset-update" hidden>Update</button>
+              <button class="linkish danger" id="btn-preset-delete" hidden>Delete</button>
+              <button class="linkish" id="btn-preset-restore" hidden>Bring back the built-in presets</button>
+            </div></div>
           <div class="two">
             <div>
-              <div class="field"><label for="bias-name">Name</label>
+              <div class="field"><label for="bias-name">Persona name</label>
                 <input type="text" id="bias-name" maxlength="40"></div>
-              <div class="field"><div class="name">Scoring</div>
-                <p class="hint">What counts as a hit for this bias.</p>
-                <div class="seg" id="bias-scoring" role="radiogroup" aria-label="Scoring">
-                  <label><input type="radio" name="scoring" value="informative"> What's informative</label>
-                  <label><input type="radio" name="scoring" value="persona"> What this person would engage with</label>
-                </div>
-                <p class="hint" id="scoring-hint"></p></div>
-              <div class="field"><label for="bias-interests" id="interests-label">What to look for</label>
-                <p class="hint">The LLM scores every reel against this: say what's high, medium and low value to you.</p>
-                <textarea id="bias-interests" rows="16"></textarea></div>
+              <div class="field"><label for="bias-interests">Who this person is, and what they engage with</label>
+                <p class="hint">The LLM scores every reel by how likely this person is to watch it to the end, like and
+                  follow. Describe the whole person, not just one side of them: a real feed is never only politics.</p>
+                <textarea id="bias-interests" rows="20"></textarea></div>
             </div>
             <div>
               <div class="field"><label for="bias-watch">Watch words</label>
                 <p class="hint">When LM Studio is off, the quick rules watch reels whose caption or hashtags contain one of these. Separate with commas.</p>
                 <textarea class="words" id="bias-watch" rows="4"></textarea></div>
               <div class="field"><label for="bias-skip">Skip words</label>
-                <p class="hint">Reels whose caption or hashtags contain one of these are skipped at once, without the LLM. Single words.</p>
+                <p class="hint">Reels whose caption or hashtags contain one of these are skipped at once, without the LLM. Leave out anything this person enjoys.</p>
                 <textarea class="words" id="bias-skip" rows="4"></textarea></div>
               <div class="field"><label for="bias-hints">Account-name hints</label>
-                <p class="hint">Parts of account names that suggest a relevant page, like "news". The quick rules watch those accounts.</p>
+                <p class="hint">Parts of account names that suggest a page this person would follow, like "news". The quick rules watch those accounts.</p>
                 <input type="text" id="bias-hints"></div>
               <div class="field"><label for="bias-seeds">Accounts to follow first</label>
-                <p class="hint">Optional. Following these gives a fresh account a head start. Only verified accounts get followed.</p>
+                <p class="hint">Pages this person would really follow. Following them gives a fresh account a head start; only verified accounts get followed.</p>
                 <textarea class="words" id="bias-seeds" rows="2"></textarea>
                 <div class="actions"><button class="btn" id="btn-seed-check">Check them</button>
                   <button class="btn" id="btn-seed-follow">Follow them</button></div></div>
             </div>
           </div>
-          <div class="actions"><button class="btn primary" id="btn-bias-save">Save bias</button></div>
+          <div class="actions"><button class="btn primary" id="btn-bias-save">Save persona</button></div>
           <p class="hint" id="bias-note"></p>
         </div>
       </section>
@@ -1296,7 +1379,7 @@ function render() {
         s.battery.on_battery && s.battery.charge < DEFAULTS.min_battery ? "warn" : ""]);
   const pill = $("bias-pill");
   pill.hidden = !(s && s.bias);
-  if (s && s.bias) pill.textContent = s.bias.name + (s.bias.persona ? ", persona" : "");
+  if (s && s.bias) pill.textContent = s.bias.own ? s.bias.name : "No persona yet";
   renderForm();
   renderStatus();
   renderPrompt();
@@ -1655,12 +1738,13 @@ async function removeSchedule(name) {
   catch (e) { toast(e.message, true); }
 }
 
-// ── Feed: what the account is being shown ──
+// ── Feed: what the algorithm shows one persona, or every account ──
 
 let feedData = null;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const pct = (x) => `${Math.round(x * 100)}%`;
 const total = (counts) => Object.values(counts).reduce((a, b) => a + b, 0);
+const feedScope = () => (document.querySelector('input[name="feed-scope"]:checked') || {}).value || "account";
 
 function svg(tag, attrs, text) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -1671,45 +1755,82 @@ function svg(tag, attrs, text) {
 
 function localTime(utc) {
   if (!utc) return "?";
-  return new Date(utc.replace(" ", "T") + "Z").toLocaleString([], {weekday: "short", day: "numeric", month: "short",
-                                                                   hour: "2-digit", minute: "2-digit"});
+  return new Date(utc.replace(" ", "T").replace(/(\+00:00|Z)?$/, "Z")).toLocaleString([], {weekday: "short",
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
 }
 
 async function loadFeed() {
-  try { feedData = await api("/api/feed?account=" + encodeURIComponent(account())); }
+  const all = feedScope() === "all";
+  document.querySelectorAll("#feed-scope label").forEach((l) => l.classList.toggle("on", l.querySelector("input").checked));
+  try { feedData = await api(all ? "/api/feed?scope=all" : "/api/feed?account=" + encodeURIComponent(account())); }
   catch (e) { toast(e.message, true); return; }
   renderFeed();
 }
 
 function renderFeed() {
-  const d = feedData, c = d.curation, n = d.counts, fit = d.bias.persona ? "fit the persona" : "on target";
-  const [headline, lede] = !n.reels
-    ? ["No reels yet", "Run a session: every reel this account is shown lands here, split into the warm-up and the " +
-       "curated feed."]
-    : c.curated
-    ? [`Curated since ${localTime(c.since.shown_at)}`, `It took ${c.since.index} judged reels. The ${n.curated} reels ` +
-       `shown since then are the curated feed; the ${n["warm-up"]} before were the warm-up.`]
-    : ["Still warming up", (c.enough
-        ? `Of the latest ${c.window} judged reels, ${pct(c.share)} ${fit}; curated needs ${pct(c.target)}.`
-        : `${c.judged} of the ${c.window} judged reels needed so far, ${pct(c.share)} ${fit} (curated needs ` +
-          `${pct(c.target)}).`) + " Everything so far is warm-up."];
+  const d = feedData, n = d.counts, all = d.scope === "all";
+  let headline, lede;
+  if (all) {
+    [headline, lede] = !n.reels
+      ? ["No reels yet", "Run sessions: every reel each account is shown lands here, persona by persona."]
+      : [`${n.curated_accounts} of ${n.accounts} feeds curated`, `${n.reels} reels shown to ${n.accounts} accounts, ` +
+         `each scrolling as its own persona, ${n.curated} of them in curated feeds. The accounts side by side first, ` +
+         "then everything together."];
+  } else {
+    const c = d.curation, fit = d.bias.persona ? "fit the persona" : "on target";
+    [headline, lede] = !n.reels
+      ? ["No reels yet", "Run a session: every reel this account is shown lands here, split into the warm-up and the " +
+         "curated feed."]
+      : c.curated
+      ? [`Curated since ${localTime(c.since.shown_at)}`, `It took ${c.since.index} judged reels. The ${n.curated} ` +
+         `reels shown since then are the curated feed; the ${n["warm-up"]} before were the warm-up.`]
+      : ["Still warming up", (c.enough
+          ? `Of the latest ${c.window} judged reels, ${pct(c.share)} ${fit}; curated needs ${pct(c.target)}.`
+          : `${c.judged} of the ${c.window} judged reels needed so far, ${pct(c.share)} ${fit} (curated needs ` +
+            `${pct(c.target)}).`) + " Everything so far is warm-up."];
+  }
   $("feed-state").textContent = headline;
   $("feed-curation").textContent = lede;
   $("feed-uncat").hidden = !n.uncategorised;
-  $("feed-uncat").textContent = `${n.uncategorised} reels aren't categorised yet. "Categorise now" asks the LLM ` +
-    "(about a minute per 60 reels); daily runs also do it after each session.";
-  $("btn-export-curated").disabled = $("btn-export-curated-csv").disabled = !c.curated;
+  $("feed-uncat").textContent = `${n.uncategorised} reels aren't categorised yet. ` + (all
+    ? "Each account's daily run categorises its reels; to do it now, pick the account and use \"Categorise now\"."
+    : "\"Categorise now\" asks the LLM (about a minute per 60 reels); daily runs also do it after each session.");
+  $("btn-categorize").hidden = all;
+  $("btn-export-curated").disabled = $("btn-export-curated-csv").disabled = !n.curated;
+  $("btn-export-curated").textContent = all ? "Download every curated feed (JSONL)" : "Download the curated feed (JSONL)";
+  $("btn-export-curated-csv").textContent = all ? "Every curated feed as CSV" : "Curated feed as CSV";
+  $("btn-export-all").textContent = all ? "Everything, every account (JSONL)" : "Everything shown (JSONL)";
+  $("personas-card").hidden = !all;
+  if (all) drawPersonas();
   drawMix();
+  drawTopics();
   drawCreators();
   fillFilters();
   drawReels();
 }
 
-function mixRows() {
-  const d = feedData, warm = d.mix["warm-up"], cur = d.mix.curated;
-  const wt = total(warm), ct = total(cur), both = d.curation.curated && ct > 0;
-  const rows = Object.keys(d.categories).filter((k) => warm[k] || cur[k]).map((k) => ({
-    label: d.categories[k], w: wt ? (warm[k] || 0) / wt : 0, c: ct ? (cur[k] || 0) / ct : 0,
+function drawPersonas() {
+  const d = feedData;
+  $("personas").replaceChildren(
+    h("tr", {}, ...["Account", "Persona", "Reels", "Curated", "Top of its feed"].map((text, i) =>
+      h("th", {class: i === 2 ? "num" : null, text}))),
+    ...d.accounts.map((a) => {
+      const size = total(a.mix), top = Object.entries(a.mix).sort((x, y) => y[1] - x[1]).slice(0, 3)
+        .map(([key, count]) => `${d.categories[key]} ${pct(count / size)}`).join(", ");
+      return h("tr", {},
+        h("td", {}, h("strong", {text: "@" + a.account})),
+        h("td", {text: a.own ? a.persona : "None yet"}),
+        h("td", {class: "num", text: String(a.reels)}),
+        h("td", {text: a.curated ? `Since ${localTime(a.since.shown_at)}`
+          : `${a.judged} of ${a.window} judged, ${pct(a.share)} ${a.is_persona ? "fit" : "on target"}`}),
+        h("td", {text: size ? top + (a.mix_of === "curated" ? "" : " (so far)") : "Not categorised yet"}));
+    }));
+}
+
+function shareRows(mixes, labels, notes) {  // one row per key: its share of the warm-up and of the curated feed
+  const warm = mixes["warm-up"], cur = mixes.curated, wt = total(warm), ct = total(cur), both = ct > 0;
+  const rows = Object.keys(labels).filter((k) => warm[k] || cur[k]).map((k) => ({
+    label: labels[k], note: notes ? notes[k] : "", w: wt ? (warm[k] || 0) / wt : 0, c: ct ? (cur[k] || 0) / ct : 0,
     wn: warm[k] || 0, cn: cur[k] || 0,
   }));
   rows.sort((a, b) => (both ? b.c - a.c || b.w - a.w : b.w - a.w));
@@ -1722,34 +1843,30 @@ function barPath(x, y, w, height, r) {  // rounded at the data end, square at th
          `Q${x + w},${y + height} ${x + w - r},${y + height} H${x} Z`;
 }
 
-function drawMix() {
-  const {rows, both, wt, ct} = mixRows(), box = $("mix-chart");
-  $("mix-sub").textContent = both
-    ? `Each category's share of the ${wt} warm-up and ${ct} curated reels (categorised, ads excluded), sorted by the curated feed.`
-    : `Each category's share of the ${wt} categorised reels so far (ads excluded).`;
-  $("mix-legend").replaceChildren(...(both ? [["--viz-before", "Warm-up"], ["--viz-after", "Curated"]] : []).map(
+function drawShares(id, {rows, both}, head, aria) {  // a dumbbell per row (warm-up to curated), or bars before curation
+  const box = $(id + "-chart");
+  $(id + "-legend").replaceChildren(...(both ? [["--viz-before", "Warm-up"], ["--viz-after", "Curated"]] : []).map(
     ([token, label]) => h("span", {}, h("i", {style: `background: var(${token})`}), label)));
   box.replaceChildren();
   if (!rows.length) {
-    box.append(h("p", {class: "hint", text: "No categorised reels yet."}));
-    $("mix-table").replaceChildren();
+    box.append(h("p", {class: "hint", text: "Nothing to show yet."}));
+    $(id + "-table").replaceChildren();
     return;
   }
-  const W = 900, labelW = 200, valueW = 52, rowH = 30, top = 6, axisH = 26;
+  const W = 900, labelW = 230, valueW = 52, rowH = 30, top = 6, axisH = 26;
   const x0 = labelW, x1 = W - valueW, plotH = rows.length * rowH, H = top + plotH + axisH;
   const max = Math.max(...rows.map((r) => Math.max(r.w, both ? r.c : 0)));
   const step = max > 0.5 ? 0.2 : max > 0.2 ? 0.1 : 0.05;
   const xmax = Math.max(step, Math.ceil(max / step - 1e-9) * step);
   const x = (v) => x0 + (x1 - x0) * v / xmax;
-  const chart = svg("svg", {viewBox: `0 0 ${W} ${H}`, role: "img",
-                            "aria-label": "Share of each content category in the feed"});
+  const chart = svg("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": aria});
   rows.forEach((r, i) => {  // row hit targets first, so the marks sit on top of the hover wash
     const hit = svg("rect", {x: 0, y: top + i * rowH, width: W, height: rowH, class: "hit", tabindex: "0",
       "aria-label": `${r.label}: ` + (both ? `warm-up ${pct(r.w)}, curated ${pct(r.c)}` : pct(r.w))});
-    hit.addEventListener("pointermove", (e) => showTip(e, r, both));
-    hit.addEventListener("focus", (e) => showTip(e, r, both));
-    hit.addEventListener("pointerleave", hideTip);
-    hit.addEventListener("blur", hideTip);
+    hit.addEventListener("pointermove", (e) => showTip(e, r, both, id));
+    hit.addEventListener("focus", (e) => showTip(e, r, both, id));
+    hit.addEventListener("pointerleave", () => hideTip(id));
+    hit.addEventListener("blur", () => hideTip(id));
     chart.append(hit);
   });
   for (let i = 0, t = 0; t <= xmax + 1e-9; i++, t = i * step) {
@@ -1758,8 +1875,8 @@ function drawMix() {
     chart.append(svg("text", {x: x(t), y: H - 7, "text-anchor": "middle", class: "tick"}, pct(t)));
   }
   rows.forEach((r, i) => {
-    const cy = top + i * rowH + rowH / 2;
-    chart.append(svg("text", {x: labelW - 14, y: cy + 4, "text-anchor": "end", class: "cat", "pointer-events": "none"}, r.label));
+    const cy = top + i * rowH + rowH / 2, label = r.label.length > 32 ? r.label.slice(0, 31) + "…" : r.label;
+    chart.append(svg("text", {x: labelW - 14, y: cy + 4, "text-anchor": "end", class: "cat", "pointer-events": "none"}, label));
     if (both) {
       chart.append(svg("line", {x1: x(r.w), x2: x(r.c), y1: cy, y2: cy, stroke: "var(--viz-link)", "stroke-width": 2,
                                 "stroke-linecap": "round", "pointer-events": "none"}));
@@ -1774,20 +1891,21 @@ function drawMix() {
       chart.append(svg("text", {x: x(r.w) + 8, y: cy + 4, class: "val", "pointer-events": "none"}, pct(r.w)));
     }
   });
-  box.append(chart, h("div", {class: "tip", id: "mix-tip", hidden: true}));
-  $("mix-table").replaceChildren(
-    h("tr", {}, h("th", {text: "Category"}), h("th", {class: "num", text: both ? "Warm-up" : "Share"}),
+  box.append(chart, h("div", {class: "tip", id: id + "-tip", hidden: true}));
+  $(id + "-table").replaceChildren(
+    h("tr", {}, h("th", {text: head}), h("th", {class: "num", text: both ? "Warm-up" : "Share"}),
       both ? h("th", {class: "num", text: "Curated"}) : null),
-    ...rows.map((r) => h("tr", {}, h("td", {text: r.label}), h("td", {class: "num", text: `${pct(r.w)} (${r.wn})`}),
-      both ? h("td", {class: "num", text: `${pct(r.c)} (${r.cn})`}) : null)));
+    ...rows.map((r) => h("tr", {}, h("td", {text: r.label + (r.note ? ` (${r.note})` : "")}),
+      h("td", {class: "num", text: `${pct(r.w)} (${r.wn})`}), both ? h("td", {class: "num", text: `${pct(r.c)} (${r.cn})`}) : null)));
 }
 
-function showTip(event, r, both) {
-  const tip = $("mix-tip"), box = $("mix-chart").getBoundingClientRect();
+function showTip(event, r, both, id) {
+  const tip = $(id + "-tip"), box = $(id + "-chart").getBoundingClientRect();
   const lines = both ? [["--viz-before", "warm-up", r.w, r.wn], ["--viz-after", "curated", r.c, r.cn]]
                      : [["--viz-bar", "so far", r.w, r.wn]];
-  tip.replaceChildren(h("div", {class: "title", text: r.label}), ...lines.map(([token, name, share, count]) =>
-    h("div", {class: "line"}, h("span", {class: "key", style: `background: var(${token})`}), h("b", {text: pct(share)}),
+  tip.replaceChildren(h("div", {class: "title", text: r.label}), r.note ? h("div", {class: "note", text: r.note}) : null,
+    ...lines.map(([token, name, share, count]) => h("div", {class: "line"},
+      h("span", {class: "key", style: `background: var(${token})`}), h("b", {text: pct(share)}),
       h("span", {class: "name", text: `${name}, ${count} reels`}))));
   tip.hidden = false;
   const at = event.clientX !== undefined && event.type !== "focus" ? event
@@ -1797,34 +1915,100 @@ function showTip(event, r, both) {
   tip.style.top = `${at.clientY - box.top + 14}px`;
 }
 
-function hideTip() { const tip = $("mix-tip"); if (tip) tip.hidden = true; }
+function hideTip(id) { const tip = $(id + "-tip"); if (tip) tip.hidden = true; }
+
+function drawMix() {
+  const d = feedData, rows = shareRows(d.mix, d.categories), all = d.scope === "all";
+  const whose = all ? "every account's" : "the";
+  $("mix-sub").textContent = rows.both
+    ? `Each category's share of ${whose} ${rows.wt} warm-up and ${rows.ct} curated reels (categorised, ads excluded), ` +
+      "sorted by the curated feed."
+    : `Each category's share of ${whose} ${rows.wt} categorised reels so far (ads excluded).`;
+  drawShares("mix", rows, "Category", "Share of each content category in the feed");
+}
+
+function drawTopics() {
+  const t = feedData.topics, all = feedData.scope === "all", one = (x) => Number(x).toFixed(1);
+  $("topics-body").hidden = !t.trained;
+  $("btn-train").textContent = t.trained ? "Retrain now" : "Train the feed model";
+  if (!t.trained) {
+    $("btn-train").disabled = t.reels < t.needed;
+    $("topics-sub").textContent = t.reels < t.needed
+      ? `It learns the topics once there are ${t.needed} different reels (there are ${t.reels}), then after every daily run.`
+      : `Not trained yet. It learns from every account's reels (${t.reels} so far), after every daily run or now.`;
+    return;
+  }
+  $("btn-train").disabled = false;
+  $("topics-sub").textContent = `Learned ${t.k} topics from ${t.trained_reels} reels across ` +
+    `${t.trained_accounts.length} accounts, ${localTime(t.created)}. ` + (t.newer ? `${t.newer} newer reels ` +
+    "join at the next training (after the next daily run)." : "Every reel shown is in it.");
+  const labels = Object.fromEntries(t.topics.map((x) => [String(x.id), x.label]));
+  const notes = Object.fromEntries(t.topics.map((x) => [String(x.id), x.category ? feedData.categories[x.category] : ""]));
+  drawShares("topic", shareRows(t.mix, labels, notes), "Topic", "Share of each topic in the feed");
+
+  const first = t.daily[0], last = t.daily[t.daily.length - 1];
+  $("narrow").textContent = `Spread over about ${one(t.effective_topics)} topics` +
+    (t.of === "curated" ? " in the curated feed" : "") + (t.daily.length > 1 && first.effective_topics !== last.effective_topics
+      ? `, ${last.effective_topics < first.effective_topics ? "down" : "up"} from ${one(first.effective_topics)} on ` +
+        `the first day. Fewer means the algorithm is narrowing the feed around the persona.`
+      : ". Fewer over time means the algorithm is narrowing the feed around the persona.");
+  $("days").replaceChildren(
+    h("tr", {}, h("th", {text: "Day"}), h("th", {class: "num", text: "Reels"}), h("th", {class: "num", text: "Topics"}),
+      h("th", {class: "num", text: "Changed"})),
+    ...t.daily.slice(-14).reverse().map((day) => h("tr", {},
+      h("td", {text: new Date(day.day + "T12:00:00Z").toLocaleDateString([], {weekday: "short", day: "numeric", month: "short"})}),
+      h("td", {class: "num", text: String(day.reels)}), h("td", {class: "num", text: one(day.effective_topics)}),
+      h("td", {class: "num", text: day.moved === null ? "" : pct(day.moved)}))));
+  const name = (id) => labels[String(id)];
+  $("rising-box").hidden = !t.rising.length;
+  $("rising").replaceChildren(...t.rising.map((r) => h("li", {}, h("span", {text: name(r.topic)}),
+    h("b", {text: `${pct(r.from)} to ${pct(r.to)}`}))));
+  $("apart-box").hidden = all || !(t.apart || []).length;
+  $("apart").replaceChildren(...(t.apart || []).map((a) => h("li", {}, h("span", {text: name(a.topic)}),
+    h("b", {text: `${pct(a.share)} here, ${pct(a.overall)} overall`}))));
+  const alike = t.alike;
+  $("alike-box").hidden = !all || !alike || alike.accounts.length < 2;
+  if (alike) {
+    $("alike").replaceChildren(h("tr", {}, h("th", {text: ""}), ...alike.accounts.map((a) => h("th", {class: "num", text: "@" + a}))),
+      ...alike.accounts.map((a, i) => h("tr", {}, h("td", {}, h("strong", {text: "@" + a})),
+        ...alike.matrix[i].map((v, j) => h("td", {class: "num", text: i === j ? "" : pct(v)})))));
+  }
+}
 
 function drawCreators() {
-  const d = feedData;
-  $("creators-sub").textContent = d.curation.curated ? "In the curated feed." : "So far: the feed isn't curated yet.";
+  const d = feedData, all = d.scope === "all";
+  $("creators-sub").textContent = d.counts.curated ? "In the curated feed" + (all ? "s." : ".")
+    : "So far: " + (all ? "no feed is curated yet." : "the feed isn't curated yet.");
   $("creators").replaceChildren(
     h("tr", {}, h("th", {text: "Creator"}), h("th", {class: "num", text: "Reels"}), h("th", {text: "Usually"}),
-      h("th", {class: "num", text: "Watched"})),
+      h("th", {class: "num", text: "Watched"}), all ? h("th", {text: "Reached"}) : null),
     ...d.creators.map((c) => h("tr", {}, h("td", {}, link(`https://www.instagram.com/${encodeURIComponent(c.creator)}/`, "@" + c.creator)),
       h("td", {class: "num", text: String(c.reels)}), h("td", {text: c.category ? d.categories[c.category] : "—"}),
-      h("td", {class: "num", text: pct(c.watched)}))));
+      h("td", {class: "num", text: pct(c.watched)}),
+      all ? h("td", {text: (c.accounts || []).map((a) => "@" + a).join(", ")}) : null)));
 }
 
 function fillFilters() {
-  const select = $("f-cat"), keep = select.value;
+  const select = $("f-cat"), keep = select.value, accounts = $("f-acct"), keepAccount = accounts.value;
   select.replaceChildren(h("option", {value: "", text: "All categories"}),
     ...Object.entries(feedData.categories).map(([key, label]) => h("option", {value: key, text: label})),
     h("option", {value: "_none", text: "Not categorised"}), h("option", {value: "_ad", text: "Ads"}));
   select.value = keep;
+  const names = [...new Set(feedData.reels.map((r) => r.account))].sort();
+  accounts.replaceChildren(h("option", {value: "", text: "Every account"}),
+    ...names.map((a) => h("option", {value: a, text: "@" + a})));
+  accounts.value = names.includes(keepAccount) ? keepAccount : "";
+  accounts.hidden = feedData.scope !== "all";
 }
 
 function drawReels() {
-  const cat = $("f-cat").value, phase = $("f-phase").value;
-  const shown = feedData.reels.filter((r) => (!phase || r.phase === phase) &&
+  const cat = $("f-cat").value, phase = $("f-phase").value, all = feedData.scope === "all";
+  const who = all ? $("f-acct").value : "";
+  const shown = feedData.reels.filter((r) => (!phase || r.phase === phase) && (!who || r.account === who) &&
     (!cat || (cat === "_ad" ? r.is_ad : cat === "_none" ? !r.category && !r.is_ad : r.category === cat)));
   $("f-count").textContent = `${shown.length} of the latest ${feedData.reels.length} reels`;
   $("reels").replaceChildren(...shown.slice(0, 250).map((r) => h("div", {class: "reel-row"},
-    h("span", {class: "when", text: localTime(r.shown_at)}),
+    h("span", {class: "when"}, localTime(r.shown_at), all ? h("span", {class: "to", text: "to @" + r.account}) : null),
     link(r.url, "@" + (r.creator || "?")),
     h("span", {}, h("span", {class: "tag-cat", text: r.is_ad ? "Ad" : r.category ? feedData.categories[r.category] : "Not categorised"})),
     h("span", {}, r.topic ? h("strong", {text: r.topic + ": "}) : null, r.summary || ""),
@@ -1833,12 +2017,14 @@ function drawReels() {
 }
 
 async function exportFeed(phase, format) {
+  const all = feedScope() === "all";
   try {
-    const res = await fetch(`/api/feed/export?account=${encodeURIComponent(account())}&phase=${phase}&format=${format}`,
+    const where = all ? "scope=all" : `account=${encodeURIComponent(account())}`;
+    const res = await fetch(`/api/feed/export?${where}&phase=${phase}&format=${format}`,
                             {headers: {"X-PRAG-Token": TOKEN}, cache: "no-store"});
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
     const url = URL.createObjectURL(await res.blob());
-    const a = h("a", {href: url, download: `${account()}-${phase}.${format}`});
+    const a = h("a", {href: url, download: `${all ? "all-accounts" : account()}-${phase}.${format}`});
     document.body.append(a);
     a.click();
     a.remove();
@@ -1846,15 +2032,18 @@ async function exportFeed(phase, format) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function categorizeNow() {
+async function runTask(path, body, message) {  // a job that runs like a session: its output is on the Run tab
   try {
-    await api("/api/feed/categorize", {account: account()});
-    toast("Categorising: follow it on the Run tab.");
+    await api(path, body);
+    toast(message);
     showTab("run");
     await refresh();
     pollOutput();
   } catch (e) { toast(e.message, true); }
 }
+
+const categorizeNow = () => runTask("/api/feed/categorize", {account: account()}, "Categorising: follow it on the Run tab.");
+const trainFeedModel = () => runTask("/api/feed/model", {}, "Training the feed model: follow it on the Run tab.");
 
 // ── Accounts ──
 
@@ -1863,7 +2052,7 @@ let accountTarget = null;
 async function loadAccounts() {
   let items;
   try { items = (await api("/api/accounts")).items; } catch (e) { toast(e.message, true); return; }
-  const head = h("tr", {}, ...["Account", "Password", "Status", "Bias", "Reels", "Last used", "Instagram login", ""]
+  const head = h("tr", {}, ...["Account", "Password", "Status", "Persona", "Reels", "Last used", "Instagram login", ""]
     .map((text, i) => h("th", {class: i === 4 ? "num" : null, text})));
   $("accounts").replaceChildren(head, ...(items.length ? items.map((a) => {
     const change = h("button", {class: "linkish", text: "Change password"});
@@ -1875,7 +2064,7 @@ async function loadAccounts() {
       h("td", {}, h("strong", {text: "@" + a.username})),
       h("td", {text: a.has_password ? "Saved" : "Not saved"}),
       h("td", {text: status}),
-      h("td", {text: a.bias}),
+      h("td", {text: a.persona_set ? a.bias : "None yet"}),
       h("td", {class: "num", text: String(a.reels)}),
       h("td", {text: a.last_used ? localTime(a.last_used) : "Never"}),
       h("td", {text: a.login_saved ? "Saved" : "Not yet"}),
@@ -1945,16 +2134,16 @@ async function deleteAccount() {
   } catch (e) { toast(e.message, true); }
 }
 
-// ── Bias ──
+// ── Persona: who the account scrolls as, and the presets it can start from ──
 
-let biasData = null;
+let biasData = null, presetKey = null;  // presetKey: the preset last picked, which Update and Delete act on
 const BIAS_FIELDS = {name: "bias-name", interests: "bias-interests", watch_words: "bias-watch",
                      skip_words: "bias-skip", creator_hints: "bias-hints", seeds: "bias-seeds"};
 const LIST_FIELDS = ["watch_words", "skip_words", "creator_hints", "seeds"];
 
 function biasForm() {
   const form = Object.fromEntries(Object.entries(BIAS_FIELDS).map(([key, id]) => [key, $(id).value]));
-  form.persona = (document.querySelector('input[name="scoring"]:checked') || {}).value === "persona";
+  form.persona = true;  // everything the tab saves is a persona
   return form;
 }
 
@@ -1966,62 +2155,97 @@ function canonical(bias) {  // how the server will store it, to spot unsaved cha
                          ...LIST_FIELDS.map((k) => list(bias[k]))]);
 }
 
-function fillBias(bias) {
+function fillBias(bias, key) {
   $("bias-name").value = bias.name;
   $("bias-interests").value = bias.interests.trim();
-  for (const key of LIST_FIELDS) $(BIAS_FIELDS[key]).value = bias[key].join(", ");
-  document.querySelector(`input[name="scoring"][value="${bias.persona ? "persona" : "informative"}"]`).checked = true;
+  for (const field of LIST_FIELDS) $(BIAS_FIELDS[field]).value = bias[field].join(", ");
+  if (key !== undefined) presetKey = key;
   biasChanged();
+}
+
+function renderPresets() {
+  $("presets").replaceChildren(...Object.entries(biasData.presets).map(([key, preset]) => {
+    const b = h("button", {type: "button", text: preset.name, "data-key": key});
+    b.onclick = () => fillBias(preset, key);
+    return b;
+  }));
+  if (presetKey && !biasData.presets[presetKey]) presetKey = null;
+  $("btn-preset-restore").hidden = !biasData.presets_edited;
 }
 
 function biasChanged() {
   if (!biasData) return;
-  const form = biasForm(), interests = form.interests.trim();
+  const form = biasForm(), mine = canonical(form);
   document.querySelectorAll("#presets button").forEach((b) => {
-    const preset = biasData.presets[b.dataset.key];
-    b.classList.toggle("on", preset.interests.trim() === interests && !!preset.persona === form.persona);
+    b.classList.toggle("on", canonical(biasData.presets[b.dataset.key]) === mine);
   });
-  document.querySelectorAll("#bias-scoring label").forEach((l) => l.classList.toggle("on", l.querySelector("input").checked));
-  $("interests-label").textContent = form.persona ? "Who this person is and what they engage with" : "What to look for";
-  $("scoring-hint").textContent = form.persona
-    ? "Scores whatever this person would watch to the end and engage with, opinion and memes included: for studying " +
-      "what the algorithm feeds someone like them. Describe the whole person below, not just one side of them."
-    : "News and knowledge score high: for a feed of useful information.";
-  $("bias-dirty").hidden = canonical(form) === canonical(biasData.bias);
-  const fits = biasData.model_interests !== null && biasData.model_interests.trim() === interests &&
-               !!biasData.model_persona === form.persona;
-  $("bias-note").textContent = "Changing \"what to look for\" starts a fresh comparison in the report; earlier reels " +
-    "stay but aren't compared with the new ones." + (fits ? "" : " When LM Studio is off, reels are only recorded " +
-    "for review with this bias: the fallback model " + (biasData.model_name ? `was trained for ${biasData.model_name}.`
-    : "hasn't been trained yet."));
+  const picked = presetKey && biasData.presets[presetKey];
+  $("btn-preset-update").hidden = $("btn-preset-delete").hidden = !picked;
+  if (picked) {
+    $("btn-preset-update").textContent = `Update “${picked.name}”`;
+    $("btn-preset-delete").textContent = `Delete “${picked.name}”`;
+  }
+  $("bias-dirty").hidden = biasData.own && mine === canonical(biasData.bias);
+  $("bias-dirty").textContent = biasData.own ? "Unsaved changes" : "Not saved yet";
+  const fits = biasData.model_interests !== null && biasData.model_interests.trim() === form.interests.trim() &&
+               !!biasData.model_persona;
+  $("bias-note").textContent = "Changing who the persona is starts a fresh comparison in the report: earlier reels " +
+    "stay, but aren't compared with the new ones. Keep one persona per account for the whole study." +
+    (fits ? "" : " LM Studio has to be on to score reels for a persona; without it, reels are only recorded.");
 }
 
 async function loadBias() {
   try {
     biasData = await api("/api/bias?account=" + encodeURIComponent(account()));
   } catch (e) { toast(e.message, true); return; }
-  $("presets").replaceChildren(...Object.entries(biasData.presets).map(([key, preset]) => {
-    const b = h("button", {type: "button", text: preset.name, "data-key": key});
-    b.onclick = () => fillBias(preset);
-    return b;
-  }));
-  $("bias-title").textContent = biasData.bias.name + (biasData.bias.persona ? ", a persona" : "");
-  $("bias-state").textContent = biasData.own ? `@${account()}'s own bias. Sessions steer the feed towards it.`
-    : `@${account()} uses the default bias, ${biasData.default_name}. Save to give it its own.`;
-  fillBias(biasData.bias);
+  renderPresets();
+  $("btn-bias-save").textContent = `Save persona for @${account()}`;
+  if (biasData.own) {
+    $("bias-title").textContent = biasData.bias.name;
+    $("bias-state").textContent = `@${account()} scrolls as this persona. Sessions keep it up, and the Feed tab shows ` +
+      "what the algorithm serves it.";
+    fillBias(biasData.bias, null);
+  } else {
+    $("bias-title").textContent = "No persona yet";
+    $("bias-state").textContent = `@${account()} scrolls with the default ${biasData.default_name} interests until ` +
+      "it has a persona. Pick a preset or describe a person, then save.";
+    const start = biasData.presets["news-follower"] ? "news-follower" : Object.keys(biasData.presets)[0];
+    if (start) fillBias(biasData.presets[start], start);
+    else fillBias({...biasData.bias, name: "", interests: ""}, null);
+  }
 }
 
 async function saveBias() {
   try {
     biasData = {...biasData, ...(await api("/api/bias", {account: account(), ...biasForm()}))};
     await loadBias();
-    toast("Saved. The next session uses this bias.");
+    toast(`Saved. @${account()}'s next session scrolls as ${biasData.bias.name}.`);
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function presetAction(kind) {
+  const picked = presetKey && biasData.presets[presetKey];
+  if (kind === "delete" && !confirm(`Delete the preset “${picked.name}”? Accounts already using it keep their persona.`)) return;
+  if (kind === "restore" && !confirm("Bring back the built-in presets? Your edited and added presets are removed.")) return;
+  try {
+    const done = kind === "new" ? await api("/api/presets/save", {preset: biasForm()})
+      : kind === "update" ? await api("/api/presets/save", {key: presetKey, preset: biasForm()})
+      : kind === "delete" ? await api("/api/presets/delete", {key: presetKey})
+      : await api("/api/presets/restore", {});
+    biasData = {...biasData, presets: done.presets, presets_edited: done.presets_edited};
+    presetKey = kind === "new" || kind === "update" ? done.key : null;
+    renderPresets();
+    biasChanged();
+    const name = (done.key && done.presets[done.key] || picked || {}).name;
+    toast({new: `Saved as a new preset: ${name}.`, update: `Updated the preset ${name}.`,
+           delete: `Deleted the preset ${name}.`, restore: "The built-in presets are back."}[kind]);
   } catch (e) { toast(e.message, true); }
 }
 
 async function followSeeds(checkOnly) {
   if (!biasData) return;
-  if (!$("bias-dirty").hidden) { toast("Save the bias first.", true); return; }
+  if (!$("bias-dirty").hidden) { toast("Save the persona first.", true); return; }
   const n = biasData.bias.seeds.length;
   if (!n) { toast("Add accounts to follow first, and save.", true); return; }
   if (!checkOnly && !confirm(`Follow ${n} accounts from @${account()}? Only verified ones get followed, at a person's ` +
@@ -2260,12 +2484,20 @@ function init() {
   $("btn-bias-save").onclick = saveBias;
   $("btn-seed-check").onclick = () => followSeeds(true);
   $("btn-seed-follow").onclick = () => followSeeds(false);
-  document.querySelectorAll('input[name="scoring"]').forEach((r) => r.addEventListener("change", biasChanged));
+  $("btn-preset-new").onclick = () => presetAction("new");
+  $("btn-preset-update").onclick = () => presetAction("update");
+  $("btn-preset-delete").onclick = () => presetAction("delete");
+  $("btn-preset-restore").onclick = () => presetAction("restore");
   $("btn-categorize").onclick = categorizeNow;
   $("btn-export-curated").onclick = () => exportFeed("curated", "jsonl");
   $("btn-export-curated-csv").onclick = () => exportFeed("curated", "csv");
   $("btn-export-all").onclick = () => exportFeed("all", "jsonl");
   $("f-cat").onchange = drawReels;
+  $("f-acct").onchange = drawReels;
+  $("btn-train").onclick = trainFeedModel;
+  const scope = store.get("feed-scope", "account");
+  document.querySelector(`input[name="feed-scope"][value="${scope === "all" ? "all" : "account"}"]`).checked = true;
+  $("feed-scope").addEventListener("change", () => { store.set("feed-scope", feedScope()); loadFeed(); });
   $("f-phase").onchange = drawReels;
   $("btn-acc-add").onclick = addAccount;
   $("acc-pass-save").onclick = () => savePassword(false);

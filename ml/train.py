@@ -24,7 +24,7 @@ import os
 
 import numpy as np
 
-from agent.bias import DEFAULT_FINGERPRINT, PRESETS
+from agent.bias import BUILT_IN, DEFAULT_BIAS, DEFAULT_FINGERPRINT, presets
 from agent.bias import load as load_bias
 from config import EMBEDDING_MODEL, WATCH_THRESHOLD
 from database.db import REVIEW_SCORER, get_connection, list_accounts
@@ -102,7 +102,8 @@ def bias_of_scorer(scorer: str) -> str | None:
         return DEFAULT_FINGERPRINT
     from perception.local_evaluator import scorer_version
 
-    candidates = [load_bias(a["username"]) for a in list_accounts()] + list(PRESETS.values())
+    candidates = ([load_bias(a["username"]) for a in list_accounts()] + [DEFAULT_BIAS] + list(presets().values())
+                  + list(BUILT_IN.values()))
     return next((b.fingerprint for b in candidates if scorer_version(b.interests, b.persona) == scorer), None)
 
 

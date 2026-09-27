@@ -193,7 +193,8 @@ class HTTPTests(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual((status, data["own"], data["bias"]["name"]), (200, False, "News (India)"))
         self.assertEqual((data["model_name"], data["model_interests"]), ("News (India)", data["bias"]["interests"]))
-        self.assertIn("tech-ai", data["presets"])
+        self.assertIn("tech", data["presets"])
+        self.assertTrue(all(p["persona"] for p in data["presets"].values()))
         self.assertEqual(self.request("GET", "/api/bias?account=nobody")[0], 400)
 
         self.assertEqual(self.request("POST", "/api/bias", {"account": "acct", "interests": "x"})[0], 400)
@@ -206,26 +207,63 @@ class HTTPTests(unittest.TestCase):
         status, _, body = self.request("POST", "/api/bias", new)
         data = json.loads(body)
         self.assertEqual((status, data["own"], data["bias"]["watch_words"]), (200, True, ["ai", "chip"]))
+        self.assertTrue(data["bias"]["persona"])  # the panel only saves personas
         self.assertEqual(self.request("POST", "/api/seed", {"account": "acct", "check_only": True})[0], 200)
         launch.Panel.runner.start_seed.assert_called_with("acct", ["gadgets360", "the_verge"], True)
 
         self.request("POST", "/api/bias", {**new, "seeds": ""})
         status, _, body = self.request("POST", "/api/seed", {"account": "acct"})
-        self.assertEqual((status, json.loads(body)["error"]), (400, "Add accounts to follow first, and save the bias."))
+        self.assertEqual((status, json.loads(body)["error"]), (400, "Add accounts to follow first, and save the persona."))
+
+    def test_presets_can_be_edited(self):
+        mine = {"name": "Cricket fan", "interests": "A cricket fan from Pune who watches every IPL highlight."}
+        status, _, body = self.request("POST", "/api/presets/save", {"preset": mine})
+        data = json.loads(body)
+        self.assertEqual((status, data["key"], data["presets_edited"]), (200, "cricket-fan", True))
+        self.assertTrue(data["presets"]["cricket-fan"]["persona"])
+        status, _, body = self.request("POST", "/api/presets/save", {"key": "tech", "preset": {**mine, "name": "Mine"}})
+        self.assertEqual((status, json.loads(body)["presets"]["tech"]["name"]), (200, "Mine"))
+        for body in ({"key": "../x", "preset": mine}, {"key": "gone", "preset": mine}, {"preset": "nope"},
+                     {"preset": {"name": "x", "interests": "short"}}):
+            with self.subTest(body=body):
+                self.assertEqual(self.request("POST", "/api/presets/save", body)[0], 400)
+        status, _, body = self.request("POST", "/api/presets/delete", {"key": "cricket-fan"})
+        self.assertEqual((status, "cricket-fan" in json.loads(body)["presets"]), (200, False))
+        self.assertEqual(self.request("POST", "/api/presets/delete", {"key": "cricket-fan"})[0], 400)
+        status, _, body = self.request("POST", "/api/presets/restore", {})
+        data = json.loads(body)
+        self.assertEqual((status, data["presets"]["tech"]["name"], data["presets_edited"]), (200, "Tech enthusiast", False))
+        self.assertEqual(self.request("POST", "/api/presets/restore", {}, token=False)[0], 403)
 
     def test_feed_endpoints(self):
+        topics = {"trained": False, "reels": 3, "needed": 30}
         with mock.patch.object(launch, "get_connection"), \
                 mock.patch.object(launch.feed_study, "summary", return_value={"counts": {"reels": 3}}), \
-                mock.patch.object(launch.feed_study, "dataset", return_value=[{"code": "A", "category": "sports"}]):
+                mock.patch.object(launch.feed_study, "summary_all", return_value={"scope": "all"}), \
+                mock.patch.object(launch.feed_model, "analysis", return_value=topics) as analysis, \
+                mock.patch.object(launch.feed_study, "dataset", return_value=[{"code": "A", "category": "sports"}]), \
+                mock.patch.object(launch.feed_study, "dataset_all", return_value=[{"code": "A"}, {"code": "B"}]):
             status, _, body = self.request("GET", "/api/feed?account=acct")
-            self.assertEqual((status, json.loads(body)), (200, {"counts": {"reels": 3}}))
+            self.assertEqual((status, json.loads(body)), (200, {"counts": {"reels": 3}, "topics": topics}))
+            self.assertEqual(analysis.call_args.args[1], "acct")  # one persona's feed
             self.assertEqual(self.request("GET", "/api/feed?account=nobody")[0], 400)
+            status, _, body = self.request("GET", "/api/feed?scope=all")
+            self.assertEqual((status, json.loads(body)), (200, {"scope": "all", "topics": topics}))
+            self.assertIsNone(analysis.call_args.args[1])  # every account's
             status, headers, body = self.request("GET", "/api/feed/export?account=acct&phase=all&format=csv")
             self.assertEqual(status, 200)
             self.assertEqual(dict(headers)["Content-Disposition"], 'attachment; filename="acct-all.csv"')
             self.assertTrue(body.startswith("account,bias,persona,phase"))
+            status, headers, body = self.request("GET", "/api/feed/export?scope=all&phase=curated&format=jsonl")
+            self.assertEqual(dict(headers)["Content-Disposition"], 'attachment; filename="all-accounts-curated.jsonl"')
+            self.assertEqual(len(body.splitlines()), 2)
             self.assertEqual(self.request("GET", "/api/feed/export?account=acct&format=xml")[0], 400)
             self.assertEqual(self.request("GET", "/api/feed/export?account=acct", token=False)[0], 403)
+
+    def test_train_the_feed_model(self):
+        launch.Panel.runner._launch.return_value = {"key": "m"}
+        self.assertEqual(self.request("POST", "/api/feed/model", {})[0], 200)
+        self.assertEqual(launch.Panel.runner._launch.call_args.args[0][1:], ["-m", "ml.feed_model", "--train"])
 
     def test_categorize_needs_lm_studio(self):
         launch.Panel.runner._launch.return_value = {"key": "c"}
