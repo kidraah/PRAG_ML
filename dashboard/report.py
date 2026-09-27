@@ -18,6 +18,7 @@ and the trend starts over.
 """
 
 import argparse
+import datetime
 import sqlite3
 import statistics
 from collections import Counter
@@ -32,7 +33,7 @@ ROWS_SQL = """
 SELECT i.session_id, i.seq, i.code, i.url, i.creator, i.is_ad, i.score_basis, i.value_score,
        i.topic, i.summary, i.decision, i.decision_basis, i.explored, i.dwell_seconds,
        i.gate_audit, i.score_seconds, i.liked, i.saved, i.followed, i.rule_score, i.ready_on_arrival,
-       s.scorer
+       i.shown_at, s.scorer
 FROM impressions i JOIN sessions s ON s.id = i.session_id
 WHERE s.account = ?
 ORDER BY i.session_id, i.seq
@@ -88,6 +89,28 @@ def curation_verdict(rows: list, window: int = CURATION_WINDOW, target: float = 
             "curated": enough and share >= target}
 
 
+def curated_since(rows: list, window: int = CURATION_WINDOW, target: float = CURATION_TARGET_SHARE) -> dict | None:
+    """The reel at which the feed first counted as curated — the end of the first run of `window` judged reels
+    whose on-target share reached `target` — or None if that hasn't happened. Reels shown from then on are
+    the curated feed; the ones before are the warm-up."""
+    judged = [r for r in rows if on_target(r) is not None]
+    hits = 0
+    for i, row in enumerate(judged):
+        hits += bool(on_target(row))
+        if i >= window:
+            hits -= bool(on_target(judged[i - window]))
+        if i >= window - 1 and hits / window >= target:
+            return {"index": i + 1, "session_id": row["session_id"], "seq": row["seq"], "shown_at": row["shown_at"]}
+    return None
+
+
+def local_time(utc_text: str | None) -> str:
+    if not utc_text:
+        return "?"
+    moment = datetime.datetime.fromisoformat(utc_text).replace(tzinfo=datetime.timezone.utc)
+    return moment.astimezone().strftime("%a %d %b %H:%M")
+
+
 def sparkline(share: float) -> str:
     return SPARK[min(len(SPARK) - 1, int(share * len(SPARK)))]
 
@@ -120,8 +143,10 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
     if others:
         out.append("Other accounts (see --account): " + ", ".join(others))
     older = len(all_rows) - len(rows)
+    bias = load_bias(account)
+    fit = "fit the persona" if bias.persona else "informative"
     out.append(
-        f"Bias {load_bias(account).name} · scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · "
+        f"Bias {bias.name}{' (persona)' * bias.persona} · scorer {scorer} · {len(sessions)} sessions · {len(rows)} reels shown · "
         f"{len(judged)} judged"
         + (f"  ({older} reels scored under another bias, prompt or model not compared)" if older else "")
     )
@@ -157,11 +182,15 @@ def render(conn: sqlite3.Connection, window: int = 50, recent: int = 8, account:
         out.append("  (no judged reels yet)")
     elif not v["enough"]:
         out.append(f"Verdict: only {v['n']} judged reels so far — need {CURATION_WINDOW} for a verdict "
-                   f"(currently {v['share']:.0%} informative, target {v['target']:.0%}).")
+                   f"(currently {v['share']:.0%} {fit}, target {v['target']:.0%}).")
     else:
         state = "CURATED ✅" if v["curated"] else "not curated yet"
-        out.append(f"Verdict: latest {v['n']} judged reels — {v['share']:.0%} informative "
+        out.append(f"Verdict: latest {v['n']} judged reels — {v['share']:.0%} {fit} "
                    f"(target {v['target']:.0%}) → {state}")
+    since = curated_since(rows)
+    if since:
+        out.append(f"Curated since {local_time(since['shown_at'])} (judged reel #{since['index']}, session "
+                   f"{since['session_id']}): reels shown from then on are the curated feed.")
 
     out += ["", "Watch time by decision (median seconds on screen)"]
     parts = []

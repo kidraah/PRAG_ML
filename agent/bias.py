@@ -9,6 +9,10 @@ A bias is what the agent looks for on one account:
   skip_words     caption / hashtag words that skip a reel instantly
   creator_hints  parts of account names that suggest a relevant page
   seeds          accounts to follow before the first session (optional)
+  persona        score reels by how likely the person described is to
+                 engage with them (their tastes and views), not by how
+                 informative they are: for studying what the algorithm feeds
+                 someone like that
 
 Each account's bias is biases/<account>.json — the panel's Bias tab edits
 it — and an account without one uses the News (India) preset, which is
@@ -45,14 +49,15 @@ class Bias:
     skip_words: list[str] = field(default_factory=list)
     creator_hints: list[str] = field(default_factory=list)
     seeds: list[str] = field(default_factory=list)
+    persona: bool = False
 
     def __post_init__(self) -> None:
         self.interests = self.interests.strip()  # the prompt strips it too, so fingerprints don't change
 
     @property
     def fingerprint(self) -> str:
-        """Short id of the interests; a model trained for one bias doesn't score another."""
-        return interests_fingerprint(self.interests)
+        """Short id of the interests (and persona scoring); a model trained for one bias doesn't score another."""
+        return interests_fingerprint(self.interests + ("\n[persona]" if self.persona else ""))
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,7 +98,7 @@ def validated(data: dict) -> Bias:
         raise ValueError(f"\"{bad}\" isn't an Instagram handle.")
     if len(seeds) > MAX_SEEDS:
         raise ValueError(f"At most {MAX_SEEDS} accounts to follow.")
-    return Bias(name=name, interests=interests, seeds=seeds, **lists)
+    return Bias(name=name, interests=interests, seeds=seeds, persona=bool(data.get("persona")), **lists)
 
 
 # ── Presets ───────────────────────────────────────────────────────────
@@ -204,6 +209,18 @@ devotional content and astrology.
         skip_words=_ENTERTAINMENT,
         creator_hints=["science", "space", "health", "doctor", "research", "nature", "isro", "nasa", "physics",
                        "biology"],
+    ),
+    "persona": Bias(
+        name="Persona (fill in)",
+        persona=True,
+        interests="""
+Who this person is: [age, where they live, languages, work, religion, politics, what they care about].
+
+What they watch to the end, like and follow: [the news and opinions they agree with, the pages they trust,
+sports, humour, faith, local issues, hobbies: describe the whole person, not just one side of them].
+
+What they scroll past: [content they find boring or disagree with].
+""",
     ),
 }
 DEFAULT_FINGERPRINT = PRESETS[DEFAULT].fingerprint

@@ -198,6 +198,11 @@ def impression_row(
     return row
 
 
+def _clip(text: str, width: int) -> str:
+    """At most `width` characters, ending in … where it was cut (the panel shows these lines too)."""
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
 def describe(
     seq: int, meta: ReelMeta | None, state: dict, is_ad: bool, result: ScoreResult | None,
     decision: Decision, dwell: float, done: Performed, dry_run: bool,
@@ -239,9 +244,9 @@ def describe(
         marks = (marks + " 🧭").strip()
     if decision.action == "SKIP" and ready and decision.basis != "ad":
         marks = ("⚡ " + marks).strip()
-    line = f"#{seq:<4} {who[:26]:26} {kind:12} {verdict[:36]:36} → {decision.action:10} {dwell:5.1f}s {marks}"
+    line = f"#{seq:<4} {_clip(who, 26):26} {kind:12} {_clip(verdict, 36):36} → {decision.action:10} {dwell:5.1f}s {marks}"
     if result and result.summary and decision.action != "SKIP":
-        line += f"\n        “{result.summary[:110]}”"
+        line += f"\n        “{_clip(result.summary, 110)}”"
     return line
 
 
@@ -281,7 +286,8 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
             print(f"❌  {exc}")
             return {"status": "llm_unavailable", "account": username, "detail": str(exc)}
 
-    scorer = (fallback.version if fallback else REVIEW_SCORER) if record else scorer_version(bias.interests)
+    scorer = ((fallback.version if fallback else REVIEW_SCORER) if record
+              else scorer_version(bias.interests, bias.persona))
     creators = CreatorMemory() if record else CreatorMemory.from_history(*load_creator_history(scorer, username))
     catalog = FeedCatalog()
     rng = random.Random()
@@ -296,7 +302,7 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
         mode = "dry run — no likes, saves or follows" if args.dry_run else "live"
     headless = getattr(args, "headless", False)
     print(f"\n🚀  PRAG curation — @{username}, session {session_id} ({mode}, {args.minutes} min"
-          + (", headless)" if headless else ")") + f"\n🎯  Bias: {bias.name}\n")
+          + (", headless)" if headless else ")") + f"\n🎯  Bias: {bias.name}" + (" (persona)" * bias.persona) + "\n")
 
     pipeline: ScoringPipeline | None = None
     worker: asyncio.Task | None = None

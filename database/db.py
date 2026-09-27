@@ -31,7 +31,8 @@ IMPRESSION_COLUMNS = (
     "liked", "saved", "followed", "rule_score", "rule_reason", "ready_on_arrival",
 )
 # Columns added after the first release; init_db adds them to older databases.
-LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arrival", "INTEGER"))
+LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arrival", "INTEGER"),
+                 ("category", "TEXT"))  # category: what kind of content, set afterwards (perception/categorize.py)
 SCORE_COLUMNS = (
     "transcript", "transcript_language", "cover_text", "score_basis",
     "value_score", "is_informational", "topic", "summary", "reasoning",

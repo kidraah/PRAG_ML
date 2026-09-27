@@ -246,7 +246,7 @@ class ScoringPipeline:
         )
         try:
             judgement = await evaluate_value_async(self._llm, meta, transcript, language, cover_text,
-                                                   interests=self.bias.interests)
+                                                   interests=self.bias.interests, persona=self.bias.persona)
         except ScoringError as exc:
             problems.append(str(exc))
             return ScoreResult(

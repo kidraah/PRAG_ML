@@ -324,6 +324,19 @@ class ImpressionRowTests(unittest.TestCase):
         self.assertIn("rule 0.8 · follows @aajtak", watched)
         self.assertNotIn("⚡", watched)
 
+    def test_console_line_marks_what_it_cuts(self):
+        meta = ReelMeta(code="L", creator="a_very_long_creator_name_indeed", duration=30.0, audio_type="original")
+        result = ScoreResult("L", basis="score", value_score=0.9, topic="A topic far too long to fit in its column",
+                             summary="s" * 200)
+        head, said = describe(9, meta, {}, False, result, Decision("WATCH", 9.0, "score"), 9.1, Performed(),
+                              False).split("\n")
+        self.assertIn(" @a_very_long_creator_name… ", head)
+        self.assertIn(" 0.90 A topic far too long to fit in… → WATCH ", head)
+        self.assertEqual(said, "        “" + "s" * 109 + "…”")
+        fits = ScoreResult("F", basis="score", value_score=0.5, topic="x" * 31, summary="short")  # exactly 36 wide
+        self.assertIn(f"0.50 {'x' * 31} → WATCH", describe(1, meta, {}, False, fits, Decision("WATCH", 9.0, "score"),
+                                                          9.1, Performed(), False))
+
     def test_scored_row(self):
         meta = ReelMeta(code="S", creator="u")
         result = ScoreResult("S", basis="score", value_score=0.8, topic="t", summary="s", seconds=3.14159)

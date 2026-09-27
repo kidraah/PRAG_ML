@@ -20,6 +20,7 @@ import os
 import sqlite3
 from dataclasses import dataclass, field
 
+from agent.bias import load as load_bias
 from config import DIGEST_HOURS, LIKE_THRESHOLD, WATCH_THRESHOLD
 from database.db import choose_account, get_connection, list_accounts
 from stories.grouping import Reel, Story, group
@@ -31,9 +32,13 @@ DIGEST_DIR = os.path.join(PROJECT_ROOT, "digests")
 REELS_SQL = """
 SELECT i.code, i.url, i.creator, i.topic, i.summary, i.caption, i.value_score, i.shown_at, i.taken_at
 FROM impressions i JOIN sessions s ON s.id = i.session_id
-WHERE s.account = ? AND i.shown_at >= ? AND i.score_basis = 'score' AND i.value_score >= ?
+WHERE s.account = ? AND i.shown_at >= ? AND i.score_basis = 'score' AND {keep}
 ORDER BY i.shown_at
 """
+# What makes a reel digest material: worth watching for the bias, or — for a persona bias, whose scores
+# say what the person would enjoy — any news or information the feed pushed to them.
+KEEP_VALUABLE = "i.value_score >= ?"
+KEEP_INFORMATIONAL = "i.is_informational = 1 AND ? IS NOT NULL"
 STATS_SQL = """
 SELECT COUNT(*) AS reels, COUNT(DISTINCT i.session_id) AS sessions, COALESCE(SUM(i.dwell_seconds), 0) AS seconds
 FROM impressions i JOIN sessions s ON s.id = i.session_id
@@ -61,12 +66,19 @@ def _utc(text: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(text).replace(tzinfo=datetime.timezone.utc)
 
 
-def load_reels(conn: sqlite3.Connection, account: str, since: datetime.datetime) -> list[Reel]:
-    """Informative reels shown to the account since `since`, one per shortcode (best score, first sighting)."""
+def load_reels(conn: sqlite3.Connection, account: str, since: datetime.datetime,
+               persona: bool | None = None) -> list[Reel]:
+    """Informative reels shown to the account since `since`, one per shortcode (best score, first sighting).
+
+    For a persona account (default: from its bias), the news and information the feed showed it.
+    """
+    if persona is None:
+        persona = load_bias(account).persona
     conn.row_factory = sqlite3.Row
     reels: dict[str, Reel] = {}
     stamp = since.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    for row in conn.execute(REELS_SQL, (account, stamp, WATCH_THRESHOLD)):
+    sql = REELS_SQL.format(keep=KEEP_INFORMATIONAL if persona else KEEP_VALUABLE)
+    for row in conn.execute(sql, (account, stamp, WATCH_THRESHOLD)):
         seen = reels.get(row["code"])
         if seen is None or row["value_score"] > seen.value_score:
             reels[row["code"]] = Reel(

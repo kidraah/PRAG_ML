@@ -103,7 +103,7 @@ def bias_of_scorer(scorer: str) -> str | None:
     from perception.local_evaluator import scorer_version
 
     candidates = [load_bias(a["username"]) for a in list_accounts()] + list(PRESETS.values())
-    return next((b.fingerprint for b in candidates if scorer_version(b.interests) == scorer), None)
+    return next((b.fingerprint for b in candidates if scorer_version(b.interests, b.persona) == scorer), None)
 
 
 def train_and_save(kind: str, examples: list[Example], report: dict, embed_fn=None,

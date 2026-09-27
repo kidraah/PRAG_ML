@@ -69,6 +69,7 @@ class RunnerTests(unittest.TestCase):
                          (True, "panel", info["key"], launch.RUN_OUTPUT))
         with open(launch.RUN_INFO) as fh:
             self.assertEqual(json.load(fh)["pid"], 4242)  # a reopened panel finds its run again
+        self.assertEqual(current["minutes"], 40)  # the page's progress line
 
         proc.poll.return_value, proc.returncode = 130, 130
         current, _ = runner.current()
@@ -89,8 +90,9 @@ class RunnerTests(unittest.TestCase):
         proc = mock.Mock(pid=7)
         proc.poll.return_value = None
         with mock.patch.object(launch.subprocess, "Popen", return_value=proc) as popen:
-            launch.Runner().start("acct", "live", 40, True, True)
+            info = launch.Runner().start("acct", "live", 40, True, True)
         self.assertEqual(popen.call_args.args[0][2:], ["--account", "acct", "--digest-only"])
+        self.assertNotIn("minutes", info)  # no session, so no progress to show
 
     def test_follows_a_run_started_elsewhere(self):
         runner = launch.Runner()
@@ -134,7 +136,8 @@ class HTTPTests(unittest.TestCase):
             headers["X-PRAG-Token"] = launch.TOKEN
         conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
         resp = conn.getresponse()
-        return resp.status, resp.getheaders(), resp.read().decode()
+        data = resp.read()
+        return resp.status, resp.getheaders(), data if path.startswith("/fonts/") else data.decode()
 
     def test_page(self):
         status, headers, body = self.request("GET", "/", token=False)
@@ -144,6 +147,15 @@ class HTTPTests(unittest.TestCase):
         self.assertNotIn("__TOKEN__", body)
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertIn("font-src 'self';", headers["Content-Security-Policy"])  # no font comes from elsewhere
+
+    def test_fonts_are_served_from_this_mac(self):
+        status, headers, body = self.request("GET", "/fonts/orbitron-latin.woff2", token=False)
+        self.assertEqual((status, dict(headers)["Content-Type"], body[:4]), (200, "font/woff2", b"wOF2"))
+        for path in ("/fonts/missing.woff2", "/fonts/..%2Flaunch.py", "/fonts/../launch.py", "/fonts/OFL-orbitron.txt"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", path, token=False)[0], 404)
+        self.assertEqual(self.request("GET", "/fonts/orbitron-latin.woff2", host=f"evil.example:{self.port}")[0], 403)
 
     def test_other_hosts_are_refused(self):  # a web page that re-points its own name at 127.0.0.1
         self.assertEqual(self.request("GET", "/", host=f"evil.example:{self.port}")[0], 403)
@@ -200,6 +212,65 @@ class HTTPTests(unittest.TestCase):
         self.request("POST", "/api/bias", {**new, "seeds": ""})
         status, _, body = self.request("POST", "/api/seed", {"account": "acct"})
         self.assertEqual((status, json.loads(body)["error"]), (400, "Add accounts to follow first, and save the bias."))
+
+    def test_feed_endpoints(self):
+        with mock.patch.object(launch, "get_connection"), \
+                mock.patch.object(launch.feed_study, "summary", return_value={"counts": {"reels": 3}}), \
+                mock.patch.object(launch.feed_study, "dataset", return_value=[{"code": "A", "category": "sports"}]):
+            status, _, body = self.request("GET", "/api/feed?account=acct")
+            self.assertEqual((status, json.loads(body)), (200, {"counts": {"reels": 3}}))
+            self.assertEqual(self.request("GET", "/api/feed?account=nobody")[0], 400)
+            status, headers, body = self.request("GET", "/api/feed/export?account=acct&phase=all&format=csv")
+            self.assertEqual(status, 200)
+            self.assertEqual(dict(headers)["Content-Disposition"], 'attachment; filename="acct-all.csv"')
+            self.assertTrue(body.startswith("account,bias,persona,phase"))
+            self.assertEqual(self.request("GET", "/api/feed/export?account=acct&format=xml")[0], 400)
+            self.assertEqual(self.request("GET", "/api/feed/export?account=acct", token=False)[0], 403)
+
+    def test_categorize_needs_lm_studio(self):
+        launch.Panel.runner._launch.return_value = {"key": "c"}
+        with mock.patch.object(launch, "_cache", {}), mock.patch.object(launch, "llm_serving", return_value=False):
+            status, _, body = self.request("POST", "/api/feed/categorize", {"account": "acct"})
+        self.assertEqual(status, 400)
+        self.assertIn("LM Studio", json.loads(body)["error"])
+        with mock.patch.object(launch, "_cache", {}), mock.patch.object(launch, "llm_serving", return_value=True):
+            self.assertEqual(self.request("POST", "/api/feed/categorize", {"account": "acct"})[0], 200)
+        self.assertEqual(launch.Panel.runner._launch.call_args.args[0][1:],
+                         ["-m", "dashboard.feed", "--account", "acct", "--categorize"])
+
+    def test_accounts_endpoints(self):
+        store = launch.account_store
+        with mock.patch.object(store, "overview", return_value=[{"username": "acct", "has_password": True}]), \
+                mock.patch.object(store, "add", return_value="new_acct") as add, \
+                mock.patch.object(store, "set_password") as set_password:
+            status, _, body = self.request("GET", "/api/accounts")
+            self.assertEqual((status, json.loads(body)["items"][0]["has_password"]), (200, True))
+            self.assertEqual(self.request("POST", "/api/accounts/add", {"username": "new_acct", "password": "pw"})[0], 200)
+            add.assert_called_once_with("new_acct", "pw")
+            add.side_effect = ValueError("@new_acct is already added.")
+            status, _, body = self.request("POST", "/api/accounts/add", {"username": "new_acct"})
+            self.assertEqual((status, json.loads(body)["error"]), (400, "@new_acct is already added."))
+            self.assertEqual(self.request("POST", "/api/accounts/password", {"username": "acct"})[0], 400)
+            self.request("POST", "/api/accounts/password", {"username": "acct", "remove": True})
+            set_password.assert_called_with("acct", "")
+            self.request("POST", "/api/accounts/password", {"username": "acct", "password": "new-pw"})
+            set_password.assert_called_with("acct", "new-pw")
+            self.assertEqual(self.request("GET", "/api/accounts", token=False)[0], 403)
+
+    def test_delete_account(self):
+        store = launch.account_store
+        launch.Panel.runner.current.return_value = ({"key": "k", "running": True}, None)
+        with mock.patch.object(store, "remove") as remove, mock.patch.object(launch.schedule, "remove", return_value=True):
+            status, _, body = self.request("POST", "/api/accounts/delete", {"username": "acct"})
+            self.assertEqual(status, 400)
+            self.assertIn("stop it first", json.loads(body)["error"])
+            remove.assert_not_called()
+            launch.Panel.runner.current.return_value = ({"key": None, "running": False}, None)
+            remove.return_value = {"username": "acct", "login_deleted": True}
+            status, _, body = self.request("POST", "/api/accounts/delete", {"username": "acct", "delete_login": True})
+            self.assertEqual(json.loads(body), {"username": "acct", "login_deleted": True, "schedule_removed": True})
+            remove.assert_called_once_with("acct", delete_login=True)
+            self.assertEqual(self.request("POST", "/api/accounts/delete", {"username": "../x"})[0], 400)
 
     def test_run_validates_its_input(self):
         for body in ({"account": "nobody"}, {"account": "acct", "engagement": "sometimes"},

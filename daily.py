@@ -18,7 +18,9 @@ PRAG — Daily Run: scroll, then write the digest (the one command)
    the trained model scores (python -m ml.train --save), so the digest
    still fills. LM Studio is started and the model loaded only with
    --start-llm.
-3. Rebuilds the digest for the last DIGEST_HOURS — digests/<account>/
+3. Categorises the reels it hasn't yet (for the panel's Feed tab), when
+   LM Studio is up.
+4. Rebuilds the digest for the last DIGEST_HOURS — digests/<account>/
    latest.html is always the newest — and posts a notification. A login
    that needs a security code notifies you while it waits for you.
 
@@ -52,6 +54,7 @@ from database.db import (
     choose_account, engaged_today, get_connection, init_db, list_accounts, minutes_today, reset_cooldown_accounts,
 )
 from ml.scorer import ModelScorer
+from perception.categorize import categorize_pending
 from perception.local_evaluator import llm_serving
 from stories.digest import build_digest, story_title, write_digest
 
@@ -128,6 +131,22 @@ async def scroll(account: str, minutes: float, dry_run: bool, start_llm: bool, h
     outcome["mode"] = mode if mode == "llm" or has_model else "record"
     outcome["dry_run"] = dry_run
     return outcome
+
+
+def categorize_new(account: str) -> None:
+    """Label the reels this account was shown that have no category yet (never fails the run)."""
+    if not llm_serving():
+        return
+    conn = get_connection()
+    try:
+        done = categorize_pending(conn, account, progress=lambda message: None)
+        if done["done"]:
+            print(f"\n🏷  Categorised {done['done']} new reels for the Feed tab"
+                  + (f" ({done['failed']} left for next time)" if done["failed"] else "") + ".")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n⚠️  Couldn't categorise the new reels: {exc}")
+    finally:
+        conn.close()
 
 
 # ── Output ────────────────────────────────────────────────────────────
@@ -214,6 +233,7 @@ def daily(args: argparse.Namespace, account: str) -> int:
             if outcome["status"] == "interrupted":
                 return 130
 
+    categorize_new(account)
     print(f"\n📰  Building the digest for the last {DIGEST_HOURS} h (checking stories against the news) …")
     conn = get_connection()
     try:
