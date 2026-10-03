@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import webbrowser
+from dotenv import load_dotenv
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -36,6 +37,7 @@ from agent import bias as biases
 from automation import prompt
 from dashboard import feed as feed_study
 from ml import feed_model
+from tools import headtohead
 from database import accounts as account_store
 from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, MIN_BATTERY, SESSION_MINUTES
 from database.db import engaged_today, get_connection, init_db, list_accounts, minutes_today
@@ -45,6 +47,7 @@ from stories.digest import DIGEST_DIR
 from tools import schedule
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))  # OPENROUTER_API_KEY, for the Jev head-to-head
 RUN_OUTPUT = os.path.join(daily.LOG_DIR, "panel-run.out")  # what the latest run started here printed
 RUN_INFO = os.path.join(daily.LOG_DIR, "panel-run.json")   # which run that was
 TOKEN = secrets.token_urlsafe(24)  # every API call carries it; other websites can't read the page to learn it
@@ -340,7 +343,7 @@ class Panel(BaseHTTPRequestHandler):
             return self._feed_export(query)
         self._handle({"/api/state": self.state, "/api/output": self.output, "/api/digest": self.digest,
                       "/api/report": self.report, "/api/schedules": self.schedules, "/api/bias": self.bias,
-                      "/api/feed": self.feed, "/api/accounts": self.account_list},
+                      "/api/feed": self.feed, "/api/accounts": self.account_list, "/api/h2h": self.h2h},
                      url.path, query)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -361,6 +364,7 @@ class Panel(BaseHTTPRequestHandler):
                       "/api/accounts/password": self.account_password, "/api/accounts/delete": self.delete_account,
                       "/api/presets/save": self.save_preset, "/api/presets/delete": self.delete_preset,
                       "/api/presets/restore": self.restore_presets,
+                      "/api/h2h/label": self.h2h_label, "/api/h2h/run": self.h2h_run,
                       "/api/schedule/install": self.install_schedule,
                       "/api/schedule/remove": self.remove_schedule}, url.path, body)
 
@@ -511,6 +515,27 @@ class Panel(BaseHTTPRequestHandler):
             raise ValueError("LM Studio isn't serving the model, so reels can't be categorised now.")
         return self.runner._launch([sys.executable, "-m", "dashboard.feed", "--account", account, "--categorize"],
                                    f"Categorising reels for @{account}")
+
+    def h2h(self, _query: dict) -> dict:
+        """The head-to-head sample for labelling (the models' scores stay hidden), your labels, and the results."""
+        run = headtohead.load_run()
+        if run is None:
+            return {"exists": False}
+        labels = headtohead.load_labels()
+        keep = ("code", "url", "creator", "caption", "cover_text", "transcript", "transcript_language", "audio_type",
+                "duration", "topic", "summary", "category", "hindi")
+        return {"exists": True, "personas": run["personas"], "labels": labels,
+                "reels": [{k: r.get(k) for k in keep} for r in run["reels"]],
+                "results": headtohead.results(run, labels), "errors": len(run.get("errors", []))}
+
+    def h2h_label(self, body: dict) -> dict:
+        label = body.get("label")
+        headtohead.save_label(str(body.get("persona", "")), str(body.get("code", "")),
+                              None if label is None else str(label))
+        return self.h2h({})
+
+    def h2h_run(self, _body: dict) -> dict:
+        return self.runner._launch([sys.executable, "-m", "tools.headtohead"], "Scoring the head-to-head")
 
     def train_feed_model(self, _body: dict) -> dict:
         return self.runner._launch([sys.executable, "-m", "ml.feed_model", "--train"], "Training the feed model")
@@ -900,6 +925,10 @@ table.data th.num { font: 500 10px var(--display); letter-spacing: 1.2px; }
 .reel-row .num { display: flex; gap: 12px; justify-content: flex-end; color: var(--muted); font: 12px var(--mono); }
 .reel-row a { overflow-wrap: anywhere; }
 #feed-scope { margin-bottom: 16px; }
+.persona-text { white-space: pre-wrap; max-width: 80ch; color: var(--muted); }
+.h2h-field { margin: 10px 0 0; max-width: 90ch; }
+.h2h-field b { display: block; font: 500 10px var(--display); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+.h2h-field span { overflow-wrap: anywhere; }
 h4.sub { font: 500 11px/1.3 var(--display); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); margin: 28px 0 8px; }
 ul.plain { list-style: none; margin: 8px 0 0; padding: 0; }
 #alike th { font: 700 14px var(--body); letter-spacing: 0; text-transform: none; color: var(--text); }
@@ -993,6 +1022,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <button class="nav-btn" data-tab="digest" title="Digest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg><span class="btn-text">Digest</span></button>
         <button class="nav-btn" data-tab="report" title="Report"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span class="btn-text">Report</span></button>
         <button class="nav-btn" data-tab="bias" title="Persona"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.75a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zm6 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/></svg><span class="btn-text">Persona</span></button>
+        <button class="nav-btn" data-tab="label" title="Label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM10 17H5v-2h5v2zm0-4H5v-2h5v2zm0-4H5V7h5v2zm4.82 6L12 12.16l1.41-1.41 1.41 1.42L17.99 9l1.42 1.42L14.82 15z"/></svg><span class="btn-text">Label</span></button>
         <button class="nav-btn" data-tab="schedule" title="Schedule"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span class="btn-text">Schedule</span></button>
         <button class="nav-btn" data-tab="accounts" title="Accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg><span class="btn-text">Accounts</span></button>
       </nav>
@@ -1205,6 +1235,39 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
           </div>
           <div class="actions"><button class="btn primary" id="btn-bias-save">Save persona</button></div>
           <p class="hint" id="bias-note"></p>
+        </div>
+      </section>
+
+      <section id="tab-label" hidden>
+        <div class="card">
+          <h2 class="headline">Jev or the local LLM?</h2>
+          <p class="lede">Both models scored the same reels as each persona. Say how the person would react to each
+            reel; you won't see either model's answer. The one that agrees with you more judges the persona better.</p>
+          <p class="notice" id="h2h-none" hidden>No head-to-head yet. <button id="btn-h2h-run">Score the sample now</button>
+            (needs LM Studio running; it takes a few minutes).</p>
+          <div id="h2h-body" hidden>
+            <div class="row"><div class="seg small" id="h2h-persona" role="radiogroup" aria-label="Persona"></div>
+              <span class="hint" id="h2h-progress"></span></div>
+            <details><summary class="hint">Who this person is</summary><p class="persona-text" id="h2h-who"></p></details>
+          </div>
+        </div>
+        <div class="card" id="h2h-reel-card" hidden>
+          <div class="status"><h3 id="h2h-count"></h3><span class="spacer"></span>
+            <button class="linkish" id="h2h-prev">Previous</button><button class="linkish" id="h2h-next">Next</button>
+            <button class="linkish" id="h2h-todo">Next unlabelled</button></div>
+          <div id="h2h-reel"></div>
+          <div class="actions">
+            <button class="btn primary" id="h2h-watch">Would watch to the end (W)</button>
+            <button class="btn" id="h2h-skip">Would scroll past (S)</button>
+            <button class="btn" id="h2h-unsure">Not sure (U)</button>
+            <span class="hint" id="h2h-yours"></span>
+          </div>
+        </div>
+        <div class="card" id="h2h-results-card" hidden>
+          <h3>Who agrees with you</h3>
+          <p class="hint" id="h2h-results-sub"></p>
+          <div class="table-scroll"><table class="data" id="h2h-results"></table></div>
+          <div id="h2h-misses"></div>
         </div>
       </section>
 
@@ -2045,6 +2108,89 @@ async function runTask(path, body, message) {  // a job that runs like a session
 const categorizeNow = () => runTask("/api/feed/categorize", {account: account()}, "Categorising: follow it on the Run tab.");
 const trainFeedModel = () => runTask("/api/feed/model", {}, "Training the feed model: follow it on the Run tab.");
 
+// ── Label: your calls for the Jev / local LLM head-to-head ──
+
+let h2hData = null, h2hIndex = 0;
+const h2hPersona = () => (document.querySelector('input[name="h2h-persona"]:checked') || {}).value;
+
+async function loadH2H() {
+  try { h2hData = await api("/api/h2h"); } catch (e) { toast(e.message, true); return; }
+  renderH2H();
+}
+
+function renderH2H() {
+  const d = h2hData;
+  $("h2h-none").hidden = d.exists;
+  $("h2h-body").hidden = $("h2h-reel-card").hidden = $("h2h-results-card").hidden = !d.exists;
+  if (!d.exists) return;
+  const pick = $("h2h-persona"), keys = Object.keys(d.personas);
+  if (pick.childElementCount !== keys.length) {
+    pick.replaceChildren(...keys.map((k, i) => h("label", {}, h("input", {type: "radio", name: "h2h-persona", value: k,
+      checked: i === 0}), d.personas[k].name)));
+  }
+  pick.querySelectorAll("label").forEach((l) => l.classList.toggle("on", l.querySelector("input").checked));
+  const persona = h2hPersona(), mine = d.labels[persona] || {};
+  $("h2h-who").textContent = d.personas[persona].interests;
+  $("h2h-progress").textContent = `${Object.keys(mine).length} of ${d.reels.length} labelled`;
+  drawH2HReel();
+  drawH2HResults();
+}
+
+function drawH2HReel() {
+  const d = h2hData, persona = h2hPersona(), r = d.reels[h2hIndex], mine = (d.labels[persona] || {})[r.code];
+  $("h2h-count").textContent = `Reel ${h2hIndex + 1} of ${d.reels.length}`;
+  const field = (name, text) => text ? h("p", {class: "h2h-field"}, h("b", {text: name}), h("span", {text})) : null;
+  const clip = (t, n) => (t || "").length > n ? t.slice(0, n) + "…" : t;
+  const audio = r.audio_type === "music" ? "Music" : r.audio_type === "original" ? "Original audio" : "";
+  $("h2h-reel").replaceChildren(
+    h("div", {class: "v-head"}, link(r.url, "@" + (r.creator || "?")),
+      h("span", {class: "kind", text: [audio, r.duration ? clock(r.duration) : ""].filter(Boolean).join(", ")}),
+      r.hindi ? h("span", {class: "badge", text: "Hindi"}) : null),
+    field("What it's about (written earlier by the LLM)", [r.topic, r.summary].filter(Boolean).join(": ")),
+    field("Caption", clip(r.caption, 700)), field("Text on the cover", clip(r.cover_text, 300)),
+    field("Speech", clip(r.transcript, 600)));
+  $("h2h-yours").textContent = mine ? `Your call: ${{watch: "would watch to the end", skip: "would scroll past",
+    unsure: "not sure"}[mine]}` : "Not labelled yet";
+  for (const [id, label] of [["h2h-watch", "watch"], ["h2h-skip", "skip"], ["h2h-unsure", "unsure"]]) {
+    $(id).classList.toggle("primary", mine === label || (!mine && label === "watch"));
+  }
+}
+
+async function labelH2H(label) {
+  const r = h2hData.reels[h2hIndex];
+  try { h2hData = await api("/api/h2h/label", {persona: h2hPersona(), code: r.code, label}); }
+  catch (e) { toast(e.message, true); return; }
+  const mine = h2hData.labels[h2hPersona()] || {};
+  const next = h2hData.reels.findIndex((x, i) => i > h2hIndex && !mine[x.code]);
+  if (next >= 0) h2hIndex = next;
+  else if (Object.keys(mine).length === h2hData.reels.length) toast("Every reel is labelled for this persona.");
+  renderH2H();
+}
+
+function drawH2HResults() {
+  const res = h2hData.results, persona = h2hPersona(), mine = res.personas[persona];
+  const cell = (a) => a && a.n ? `${pct(a.agree)} of ${a.n}` : "";
+  $("h2h-results-sub").textContent = "How often each model's watch-or-scroll call matches yours (reels marked " +
+    "\"not sure\" are left out). Kappa is agreement beyond chance: 1 is perfect, 0 is no better than guessing. " +
+    `Median time per reel: Jev ${res.seconds.jev ?? "?"} s, local LLM ${res.seconds.llm ?? "?"} s.` +
+    (h2hData.errors ? ` ${h2hData.errors} scoring calls failed; run the head-to-head again to retry them.` : "");
+  const rows = [];
+  for (const [name, entry] of [[h2hData.personas[persona].name, mine], ["Every persona", res.overall]]) {
+    for (const [model, label] of [["jev", "Jev"], ["llm", "Local LLM"]]) {
+      const m = entry[model] || {};
+      rows.push(h("tr", {}, h("td", {text: name}), h("td", {}, h("strong", {text: label})),
+        h("td", {class: "num", text: cell(m)}), h("td", {class: "num", text: m.kappa == null ? "" : m.kappa.toFixed(2)}),
+        h("td", {class: "num", text: cell(m.hindi)})));
+    }
+  }
+  $("h2h-results").replaceChildren(h("tr", {}, ...["Persona", "Model", "Agrees with you", "Kappa", "Hindi reels"]
+    .map((t, i) => h("th", {class: i > 1 ? "num" : null, text: t}))), ...rows);
+  const done = mine.labelled === mine.of;  // the models' answers stay hidden until you've labelled every reel
+  $("h2h-misses").replaceChildren(done && mine.misses.length ? h("h4", {class: "sub", text: "Where a model disagreed with you"}) : null,
+    ...(done ? mine.misses : []).map((x) => h("p", {class: "hint", text: `@${x.creator}: you said ${x.you}; ` +
+      `Jev ${x.jev.toFixed(2)}, local LLM ${x.llm.toFixed(2)} (watch at 0.40 or more)`})));
+}
+
 // ── Accounts ──
 
 let accountTarget = null;
@@ -2273,6 +2419,7 @@ function showTab(name) {
   if (name === "bias") loadBias();
   if (name === "feed") loadFeed();
   if (name === "accounts") loadAccounts();
+  if (name === "label") loadH2H();
 }
 
 // ── The look: two themes, the collapsible rail, and the contour field behind it ──
@@ -2495,6 +2642,27 @@ function init() {
   $("f-cat").onchange = drawReels;
   $("f-acct").onchange = drawReels;
   $("btn-train").onclick = trainFeedModel;
+  $("h2h-persona").addEventListener("change", () => { h2hIndex = 0; renderH2H(); });
+  $("h2h-watch").onclick = () => labelH2H("watch");
+  $("h2h-skip").onclick = () => labelH2H("skip");
+  $("h2h-unsure").onclick = () => labelH2H("unsure");
+  $("h2h-prev").onclick = () => { h2hIndex = Math.max(0, h2hIndex - 1); drawH2HReel(); };
+  $("h2h-next").onclick = () => { h2hIndex = Math.min(h2hData.reels.length - 1, h2hIndex + 1); drawH2HReel(); };
+  $("h2h-todo").onclick = () => {
+    const mine = h2hData.labels[h2hPersona()] || {};
+    const next = h2hData.reels.findIndex((x) => !mine[x.code]);
+    if (next >= 0) { h2hIndex = next; drawH2HReel(); } else toast("Every reel is labelled for this persona.");
+  };
+  $("btn-h2h-run").onclick = () => runTask("/api/h2h/run", {}, "Scoring the head-to-head: follow it on the Run tab.");
+  document.addEventListener("keydown", (e) => {
+    if (tab !== "label" || !h2hData || !h2hData.exists || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    const key = e.key.toLowerCase();
+    if (key === "w") labelH2H("watch");
+    else if (key === "s") labelH2H("skip");
+    else if (key === "u") labelH2H("unsure");
+    else if (e.key === "ArrowRight") $("h2h-next").click();
+    else if (e.key === "ArrowLeft") $("h2h-prev").click();
+  });
   const scope = store.get("feed-scope", "account");
   document.querySelector(`input[name="feed-scope"][value="${scope === "all" ? "all" : "account"}"]`).checked = true;
   $("feed-scope").addEventListener("change", () => { store.set("feed-scope", feedScope()); loadFeed(); });

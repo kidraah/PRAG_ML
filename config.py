@@ -14,6 +14,10 @@ LM_STUDIO_CLI = "~/.lmstudio/bin/lms"   # used to start the server / load the mo
 LLM_MODEL_NAME = "qwen/qwen3.5-9b"
 LLM_CONTEXT_LENGTH = 4096
 LLM_THINKING = False                   # False: reasoning models (Qwen3.5, ...) answer directly instead of thinking first
+# Who judges reels in a session: "llm" (LM Studio scores and writes, the system as it is) or "jev" (Jev, through
+# OpenRouter, judges each reel in ~0.4 s and the local LLM writes the text in the background; a session doesn't
+# start when Jev can't be reached). "jev" is still being finished and tested: keep "llm" until then.
+SCORER = "llm"
 SCORING_WORKERS = 2                    # reels scored at once; LM Studio must allow this many parallel predictions
 
 

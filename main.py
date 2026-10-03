@@ -48,6 +48,7 @@ from agent.pipeline import ScoreResult, ScoringPipeline
 from agent.rules import RuleVerdict, rule_score
 from ml.scorer import ModelScorer
 from automation.browser_driver import (
+    active_reel,
     close_browser,
     follow_active_creator,
     init_browser,
@@ -58,6 +59,7 @@ from automation.browser_driver import (
     profile_lock,
     save_active_reel,
     scroll_next,
+    set_input_lock,
     wait_for_first_reel,
 )
 from automation.feed_capture import FeedCatalog, ReelMeta
@@ -72,6 +74,7 @@ from config import (
     MAX_LIKES_PER_SESSION,
     MAX_SAVES_PER_SESSION,
     OBSERVE_DWELL,
+    SCORER,
     SESSION_MINUTES,
     WATCH_THRESHOLD,
 )
@@ -88,6 +91,7 @@ from database.db import (
     start_session,
     update_impression_score,
 )
+from perception import jev
 from perception.local_evaluator import ScoringError, ensure_llm_ready, scorer_version
 
 MAX_STUCK_SCROLLS = 3
@@ -110,6 +114,38 @@ async def _sleep_until(deadline: float) -> None:
     delay = deadline - time.monotonic()
     if delay > 0:
         await asyncio.sleep(delay)
+
+
+def interference(before: dict, after: dict, done: Performed, tried: frozenset = frozenset()) -> list[str]:
+    """What changed on screen during a reel that the agent didn't do (someone at the Mac, or the browser).
+
+    `tried`: the buttons the agent pressed on this reel ("like", "save", "follow"), whatever came of it, so a
+    like of its own that registered late is never taken for someone else's.
+    """
+    if not after.get("src") or not after.get("code"):
+        return ["left the Reels feed"]
+    if (after["code"] != before["code"]) if before.get("code") else (after["src"] != before.get("src")):
+        return ["moved to another reel"]  # (the same reel's video can reload, so the code decides)
+    reasons = []
+    for key, off in (("like", "Like"), ("save", "Save")):
+        was, now = (before.get(key) or {}).get("label"), (after.get(key) or {}).get("label")
+        if key not in tried and was and now and was != now:
+            reasons.append(f"{'un' if now == off else ''}{'liked' if key == 'like' else 'saved'} it")
+    was, now = (before.get("follow") or {}).get("text"), (after.get("follow") or {}).get("text")
+    if "follow" not in tried and was and now and was != now:
+        reasons.append("followed the creator" if was == "Follow" else "unfollowed the creator")
+    return reasons
+
+
+async def recover(page, reasons: list[str]) -> dict:
+    """Get back to a reel playing in the feed, locked; returns its state."""
+    if "left the Reels feed" in reasons:
+        await open_reels(page)
+        state = await wait_for_first_reel(page)
+    else:
+        state = await active_reel(page)
+    await set_input_lock(page, True)
+    return state
 
 
 async def execute_decision(
@@ -221,7 +257,9 @@ def describe(
     if rule is not None and (decision.basis == "rules" or not scored):  # the rules decided (or stood in)
         verdict = f"rule {rule.score:.1f} · {rule.reason}"
     elif scored:
-        verdict = f"{result.value_score:.2f} {result.topic}"
+        labels = result.labels or {}  # Jev: no topic until the LLM has written it, but its labels
+        what = result.topic or ", ".join(v.replace("_", " ") for v in (labels.get("source_type"), labels.get("stance")) if v)
+        verdict = f"{result.value_score:.2f} {what}"
     elif result and result.basis == "keyword_gate":
         verdict = f"gate: {result.gate_keyword}"
     elif result and result.basis == "creator_prior":
@@ -270,6 +308,21 @@ async def run(args: argparse.Namespace) -> dict:
         return await _session(args, username)
 
 
+async def jev_problem(bias) -> str | None:
+    """Why Jev can't judge reels right now (no key, no credit, down), or None: one small call."""
+    import aiohttp
+
+    if not jev.api_key():
+        return "OPENROUTER_API_KEY isn't set in .env"
+    try:
+        async with aiohttp.ClientSession() as session:
+            await jev.judge_async(session, "Caption: Warm-up request.", bias.interests, persona=bias.persona,
+                                  labels=False)
+        return None
+    except jev.JevError as exc:
+        return str(exc)
+
+
 async def _session(args: argparse.Namespace, username: str) -> dict:
     mark_account_used(username)
     observe, rules = args.observe, args.rules
@@ -279,7 +332,16 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
     bias = load_bias(username)  # what this account looks for (the panel's Bias tab)
     fallback = ModelScorer() if rules and ModelScorer.available(bias=bias) else None
 
-    if not record:
+    # Who judges reels. Jev (config.SCORER): the session only runs when Jev answers, so an account's persona is
+    # always judged the same way; the local LLM writes the text as far as it can. Otherwise the LLM does both.
+    use_jev = not record and SCORER == "jev"
+    if use_jev:
+        problem = await jev_problem(bias)
+        if problem:
+            print(f"❌  Jev can't be reached ({problem}): no session now, so this persona is never judged by "
+                  "anything else.")
+            return {"status": "scorer_unavailable", "account": username, "detail": problem}
+    elif not record:
         try:
             await asyncio.to_thread(ensure_llm_ready)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
@@ -287,11 +349,12 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
             return {"status": "llm_unavailable", "account": username, "detail": str(exc)}
 
     scorer = ((fallback.version if fallback else REVIEW_SCORER) if record
+              else jev.jev_version(bias.interests, bias.persona) if use_jev
               else scorer_version(bias.interests, bias.persona))
     creators = CreatorMemory() if record else CreatorMemory.from_history(*load_creator_history(scorer, username))
     catalog = FeedCatalog()
     rng = random.Random()
-    model = "none" if observe else "rules" if rules else LLM_MODEL_NAME
+    model = "none" if observe else "rules" if rules else jev.JEV_MODEL if use_jev else LLM_MODEL_NAME
     session_id = start_session(username, dry_run=args.dry_run or observe, model=model, scorer=scorer)
     if observe:
         mode = "observe — recording every reel, no scoring or engagement"
@@ -309,6 +372,7 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
     started = time.monotonic()
     seq = likes = saves = follows = 0
     tally: Counter = Counter()
+    lock: dict = {}  # the window's input lock: {"locked", "blocked"}
     outcome = {"status": "ok", "account": username, "session_id": session_id}
 
     try:
@@ -318,6 +382,15 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
             # Scores that arrive after their reel was logged (decided on timeout).
             update_impression_score(session_id, meta.code, result.score_fields())
 
+        def on_text(meta: ReelMeta, result: ScoreResult) -> None:
+            # The LLM's words for a reel Jev judged (a reel not logged yet takes them from its result).
+            update_impression_score(session_id, meta.code, {
+                "topic": result.topic, "summary": result.summary, "reasoning": result.reasoning,
+                "is_informational": int(bool(result.is_informational)), "llm_score": result.llm_score})
+            tally["written"] += 1
+            if result.summary:
+                print(f"        ✍  {result.topic or 'Written'} (@{meta.creator or '?'}): “{result.summary[:110]}”")
+
         pipeline = ScoringPipeline(
             catalog, creators, rng=rng,
             user_agent=await page.evaluate("navigator.userAgent"),
@@ -325,8 +398,12 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
             use_llm=not record,
             fallback_scorer=fallback,
             bias=bias,
+            scorer="jev" if use_jev else "llm",
+            on_text=on_text,
         )
-        print("  🔥  Warming up Whisper and OCR …" if record else "  🔥  Warming up Whisper, OCR and the LLM …")
+        print("  🔥  Warming up Whisper and OCR …" if record else
+              "  🔥  Warming up Whisper, OCR, Jev and the writer …" if use_jev else
+              "  🔥  Warming up Whisper, OCR and the LLM …")
         warm_start = time.monotonic()
         try:
             await pipeline.warm_up()
@@ -354,6 +431,8 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
             print("❌  No reel started playing.")
             outcome["status"] = "no_reels"
             return outcome
+        lock = await set_input_lock(page, True)  # from here on, only the agent steers this window
+        print("  🔒  The window ignores clicks, scrolls and keys while the session runs.")
 
         deadline = started + args.minutes * 60
         while time.monotonic() < deadline and (args.max_reels is None or seq < args.max_reels):
@@ -435,13 +514,24 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
                     creators.mark_following(meta.creator)
             dwell = time.monotonic() - shown_at
 
+            # Did anything the agent didn't do reach the reel? Then its watch isn't the persona's.
+            now = await active_reel(page)
+            tried = frozenset() if args.dry_run else frozenset(
+                key for key, on in (("like", decision.like), ("save", decision.save), ("follow", decision.follow)) if on)
+            reasons = interference(state, now, done, tried)
+            lock = await set_input_lock(page, True) or lock  # re-armed if the page reloaded
             latest = pipeline.result(code)  # may have landed during the dwell
             row = impression_row(session_id, seq, code, meta, state, is_ad, latest, decision, dwell, done)
+            if reasons:
+                row["decision_basis"] = "interrupted"
             row["ready_on_arrival"] = int(ready_on_arrival)
             if rule is not None:
                 row.update(rule_score=rule.score, rule_reason=rule.reason)
             log_impression(row)
             print(describe(seq, meta, state, is_ad, latest, decision, dwell, done, args.dry_run, rule, ready_on_arrival))
+            if reasons:
+                print(f"        ✋  Interrupted ({', '.join(reasons)}): not counted as the persona's; carrying on.")
+                tally["interrupted"] += 1
 
             tally[decision.action] += 1
             tally["flicked"] += decision.action == "SKIP" and ready_on_arrival and decision.basis != "ad"
@@ -454,6 +544,10 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
                 tally["informative"] += latest.value_score >= WATCH_THRESHOLD
                 tally["valuable"] += latest.value_score >= LIKE_THRESHOLD
 
+            if reasons:  # carry on from whatever is on screen now, without scrolling past it
+                state = await recover(page, reasons)
+                if state.get("src"):
+                    continue
             prev_src = state.get("src")
             for _attempt in range(MAX_STUCK_SCROLLS):
                 state = await scroll_next(page, prev_src)
@@ -499,6 +593,9 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
     )
     if not args.dry_run:
         print(f"    engagement: ❤️ {tally['liked']} · 🔖 {tally['saved']} · ➕ {tally['followed']}")
+    if lock.get("blocked") or tally["interrupted"]:
+        print(f"    🔒 ignored {lock.get('blocked', 0)} clicks, scrolls or keys from outside the agent; "
+              f"{tally['interrupted']} reels interrupted anyway (not counted as the persona's)")
     print("    Is the feed curated yet? →  python -m dashboard.report\n")
     return outcome
 

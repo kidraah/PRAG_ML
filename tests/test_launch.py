@@ -260,6 +260,25 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(self.request("GET", "/api/feed/export?account=acct&format=xml")[0], 400)
             self.assertEqual(self.request("GET", "/api/feed/export?account=acct", token=False)[0], 403)
 
+    def test_head_to_head_endpoints(self):
+        run = {"personas": {"p": {"name": "P", "interests": "x"}}, "reels": [{"code": "A", "creator": "a", "hindi": False}],
+               "scores": {"p": {"A": {"jev": {"score": 0.9, "seconds": 0.3}, "llm": {"score": 0.8, "seconds": 9}}}}}
+        with mock.patch.object(launch.headtohead, "load_run", return_value=None):
+            self.assertEqual(json.loads(self.request("GET", "/api/h2h")[2]), {"exists": False})
+        with mock.patch.object(launch.headtohead, "load_run", return_value=run), \
+                mock.patch.object(launch.headtohead, "load_labels", return_value={}), \
+                mock.patch.object(launch.headtohead, "save_label") as save:
+            data = json.loads(self.request("GET", "/api/h2h")[2])
+            self.assertEqual((data["exists"], data["reels"][0]["code"]), (True, "A"))
+            self.assertNotIn("scores", json.dumps(data["reels"]))  # the models' answers stay hidden
+            self.assertEqual(self.request("POST", "/api/h2h/label", {"persona": "p", "code": "A", "label": "watch"})[0], 200)
+            save.assert_called_with("p", "A", "watch")
+            save.side_effect = ValueError("That reel isn't in the head-to-head sample.")
+            self.assertEqual(self.request("POST", "/api/h2h/label", {"persona": "p", "code": "Z", "label": "watch"})[0], 400)
+        launch.Panel.runner._launch.return_value = {"key": "h"}
+        self.assertEqual(self.request("POST", "/api/h2h/run", {})[0], 200)
+        self.assertEqual(launch.Panel.runner._launch.call_args.args[0][1:], ["-m", "tools.headtohead"])
+
     def test_train_the_feed_model(self):
         launch.Panel.runner._launch.return_value = {"key": "m"}
         self.assertEqual(self.request("POST", "/api/feed/model", {})[0], 200)

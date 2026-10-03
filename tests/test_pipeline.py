@@ -273,8 +273,10 @@ class OutcomeTests(unittest.TestCase):
 
     def run_session(self, **patches):
         args = argparse.Namespace(account=None, observe=False, rules=False, dry_run=True, minutes=1, max_reels=1)
+        # A session test never opens a real browser: launching one fails loudly.
         quiet = dict(init_db=mock.DEFAULT, reset_cooldown_accounts=mock.DEFAULT, list_accounts=mock.DEFAULT,
-                     mark_account_used=mock.DEFAULT, start_session=mock.DEFAULT, profile_lock=mock.DEFAULT)
+                     mark_account_used=mock.DEFAULT, start_session=mock.DEFAULT, profile_lock=mock.DEFAULT,
+                     init_browser=mock.AsyncMock(side_effect=AssertionError("a test tried to open a browser")))
         with mock.patch.multiple(main_module, **{**quiet, **patches}) as mocks, \
                 contextlib.redirect_stdout(io.StringIO()):
             return asyncio.run(main_module.run(args)), mocks
@@ -350,3 +352,38 @@ class ImpressionRowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterferenceTests(unittest.TestCase):
+    """main.interference: what someone at the Mac did to the reel, not the agent."""
+
+    BEFORE = {"src": "v1", "code": "C1", "like": {"label": "Like"}, "save": {"label": "Save"}, "follow": {"text": "Follow"}}
+
+    def after(self, **changes):
+        return {**self.BEFORE, **changes}
+
+    def test_nothing_changed(self):
+        self.assertEqual(main_module.interference(self.BEFORE, self.after(), Performed()), [])
+
+    def test_the_agents_own_actions_are_not_interference(self):
+        after = self.after(like={"label": "Unlike"}, save={"label": "Remove"}, follow={"text": "Following"})
+        tried = frozenset({"like", "save", "follow"})
+        self.assertEqual(main_module.interference(self.BEFORE, after, Performed(liked=True), tried), [])
+        # even when its like registered too late to be confirmed
+        self.assertEqual(main_module.interference(self.BEFORE, after, Performed(), tried), [])
+
+    def test_a_reloaded_video_is_the_same_reel(self):
+        self.assertEqual(main_module.interference(self.BEFORE, self.after(src="v1-reloaded"), Performed()), [])
+
+    def test_someone_else_liked_saved_or_followed(self):
+        after = self.after(like={"label": "Unlike"}, save={"label": "Remove"}, follow={"text": "Following"})
+        self.assertEqual(main_module.interference(self.BEFORE, after, Performed()),
+                         ["liked it", "saved it", "followed the creator"])
+        liked = {**self.BEFORE, "like": {"label": "Unlike"}}
+        self.assertEqual(main_module.interference(liked, {**liked, "like": {"label": "Like"}}, Performed()), ["unliked it"])
+
+    def test_scrolled_away_or_left_the_feed(self):
+        self.assertEqual(main_module.interference(self.BEFORE, self.after(src="v2", code="C2"), Performed()),
+                         ["moved to another reel"])
+        self.assertEqual(main_module.interference(self.BEFORE, {"src": "", "code": None}, Performed()),
+                         ["left the Reels feed"])

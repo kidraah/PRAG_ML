@@ -6,6 +6,13 @@ actions on whichever reel is on screen. The on-screen reel is found from
 the DOM — the <video> with the most visible area, and the action bar in
 the same container — so a like, save or follow can never land on one of
 the preloaded neighbours stacked above and below it.
+
+While a session scrolls, the window ignores people: clicks, double-clicks,
+scrolls, keys and touches are swallowed (INPUT_LOCK_JS) unless the agent
+is acting (agent_input), so nobody at the Mac can steer the persona's
+feed by accident. Anything that still gets through (the browser's own
+buttons, say) is caught by the session loop, which checks the reel after
+each one (main.py).
 """
 
 import asyncio
@@ -23,6 +30,69 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILES_DIR = os.path.join(PROJECT_ROOT, "browser_profiles")
 REELS_URL = "https://www.instagram.com/reels/"
 REEL_CODE_RE = re.compile(r"instagram\.com/reels?/([A-Za-z0-9_-]{6,})")
+
+
+# ── Input Lock ────────────────────────────────────────────────────────
+
+INPUT_LOCK_JS = r"""
+(() => {
+    if (window.__pragLockInstalled) return;
+    window.__pragLockInstalled = true;
+    window.__pragLock = false;       // on once the session is scrolling (set_input_lock)
+    window.__pragAgentUntil = 0;     // the agent is acting until then: its own input passes
+    window.__pragBlocked = 0;        // how many events were swallowed
+    const block = (event) => {
+        if (!window.__pragLock || Date.now() < window.__pragAgentUntil) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.__pragBlocked++;
+    };
+    for (const type of ["wheel", "mousewheel", "touchstart", "touchmove", "touchend", "keydown", "keyup", "keypress",
+                        "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu", "pointerdown",
+                        "pointerup", "dragstart", "selectstart"]) {
+        window.addEventListener(type, block, {capture: true, passive: false});
+    }
+})();
+"""
+
+SET_LOCK_JS = r"""
+(on) => {
+    window.__pragLock = on;
+    let banner = document.getElementById("prag-lock-banner");
+    if (on && !banner) {
+        banner = document.createElement("div");
+        banner.id = "prag-lock-banner";
+        banner.textContent = "PRAG is scrolling this window: clicks, scrolls and keys are ignored. Stop the session from the panel.";
+        banner.style.cssText = "position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;" +
+            "pointer-events:none;background:rgba(14,14,17,.88);color:#fff;font:600 12px -apple-system,sans-serif;" +
+            "padding:6px 12px;border:1px solid rgba(255,255,255,.55)";
+        document.documentElement.appendChild(banner);
+    }
+    if (banner) banner.hidden = !on;
+    return {locked: window.__pragLock, blocked: window.__pragBlocked || 0};
+}
+"""
+
+
+async def set_input_lock(page: Page, on: bool) -> dict:
+    """Make the window ignore people (on) or not; returns {"locked", "blocked"}. Safe mid-navigation."""
+    try:
+        await page.evaluate(INPUT_LOCK_JS)  # a page loaded before the init script: install it now
+        return await page.evaluate(SET_LOCK_JS, on) or {}
+    except Exception:  # noqa: BLE001 — page mid-navigation: the next check turns it back on
+        return {}
+
+
+@contextlib.asynccontextmanager
+async def agent_input(page: Page, seconds: float = 6.0):
+    """Let the agent's own clicks, keys and scrolls through the input lock while inside."""
+    with contextlib.suppress(Exception):
+        await page.evaluate(f"window.__pragAgentUntil = Date.now() + {int(seconds * 1000)}")
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            await page.evaluate("window.__pragAgentUntil = 0")
 
 
 # ── Module State ──────────────────────────────────────────────────────
@@ -87,6 +157,7 @@ async def init_browser(user_data_dir: str, headless: bool = False) -> tuple[Brow
         args=["--disable-blink-features=AutomationControlled"],
     )
 
+    await _context.add_init_script(INPUT_LOCK_JS)  # every page gets the lock (off until a session turns it on)
     _page = _context.pages[0] if _context.pages else await _context.new_page()
     await Stealth().apply_stealth_async(_page)
 
@@ -346,11 +417,12 @@ async def scroll_next(page: Page, prev_src: str) -> dict:
     """
     await _human_delay(0.15, 0.45)
     for method in ("ArrowDown", "PageDown", "wheel"):
-        if method == "wheel":
-            await page.mouse.move(640 + random.uniform(-40, 40), 400 + random.uniform(-60, 60))
-            await page.mouse.wheel(0, 800)
-        else:
-            await page.keyboard.press(method)
+        async with agent_input(page):
+            if method == "wheel":
+                await page.mouse.move(640 + random.uniform(-40, 40), 400 + random.uniform(-60, 60))
+                await page.mouse.wheel(0, 800)
+            else:
+                await page.keyboard.press(method)
         if await _wait_for_new_video(page, prev_src, timeout=4.0 if method == "ArrowDown" else 3.0):
             break
     await asyncio.sleep(0.3)  # the URL is updated just after the swap
@@ -362,9 +434,10 @@ async def scroll_next(page: Page, prev_src: str) -> dict:
 async def _click(page: Page, target: dict) -> None:
     x = target["x"] + random.uniform(-3, 3)
     y = target["y"] + random.uniform(-3, 3)
-    await page.mouse.move(x, y, steps=random.randint(8, 16))
-    await asyncio.sleep(random.uniform(0.08, 0.25))
-    await page.mouse.click(x, y)
+    async with agent_input(page):
+        await page.mouse.move(x, y, steps=random.randint(8, 16))
+        await asyncio.sleep(random.uniform(0.08, 0.25))
+        await page.mouse.click(x, y)
 
 
 async def _toggle(page: Page, key: str, off_label: str) -> bool:
