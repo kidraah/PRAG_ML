@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRAG — Demo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230e0e11'/%3E%3Crect x='3' y='3' width='26' height='26' fill='none' stroke='%23fff' stroke-width='2.5'/%3E%3Cpath d='M12 10v12l10-6z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── PRAG Design System: The KIDRAAH_ workspace ── */
+:root {
+  color-scheme: dark;
+  --bg: #0e0e11; --rail: #050507; --bar: #050507; --panel: #14141a; --glass: rgba(255,255,255,.05);
+  --contour: 255, 255, 255; --contour-alpha: .18;
+  --text: #e2e2e2; --muted: #8b8b92; --bar-text: #e2e2e2; --bar-muted: #8b8b92;
+  --line: rgba(255,255,255,.55); --rule: rgba(255,255,255,.16); --hover: rgba(255,255,255,.14);
+  --accent: #ffffff; --on-accent: #0e0e11; --focus: #ffffff; --link: #ffffff;
+  --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444;
+  --shadow-sm: 3px 3px 0 rgba(255,255,255,.55); --shadow-lg: 5px 5px 0 rgba(255,255,255,.55);
+  --nav-bg: #14141a; --nav-text: #e2e2e2; --nav-line: rgba(255,255,255,.55);
+  --nav-on-bg: #ffffff; --nav-on-text: #0e0e11;
+  --console-bg: #050507; --console-text: #e2e2e2;
+  --viz-before: #6e6e6e; --viz-after: #e2e2e2; --viz-bar: #a8a8a8; --viz-grid: #26262d; --viz-axis: #4a4a52;
+  --display: 'Orbitron', 'Avenir Next', sans-serif;
+  --body: 'Rajdhani', 'Avenir Next', sans-serif;
+  --mono: 'JetBrains Mono', Menlo, monospace;
+}
+[data-theme="brutal"] {
+  color-scheme: light;
+  --bg: #fbf1da; --rail: #d6791c; --bar: #edb03c; --panel: #fbf1da; --glass: rgba(18,33,58,.05);
+  --contour: 251, 241, 218; --contour-alpha: .5;
+  --text: #12213a; --muted: #4f5868; --bar-text: #12213a; --bar-muted: #12213a;
+  --line: #12213a; --rule: rgba(18,33,58,.2); --hover: rgba(214,121,28,.18);
+  --accent: #d6791c; --on-accent: #12213a; --focus: #12213a; --link: #12213a;
+  --ok: #166534; --warn: #92400e; --bad: #b91c1c;
+  --shadow-sm: 3px 3px 0 #12213a; --shadow-lg: 5px 5px 0 #12213a;
+  --nav-bg: #ffffff; --nav-text: #12213a; --nav-line: #12213a;
+  --nav-on-bg: #12213a; --nav-on-text: #ffffff;
+  --console-bg: #12213a; --console-text: #fbf1da;
+  --viz-before: #d98a3a; --viz-after: #8a4a12; --viz-bar: #b0621a; --viz-grid: #eadcbc; --viz-axis: #b8ab8c;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 500 16px/1.5 var(--body); -webkit-font-smoothing: antialiased; }
+a { color: var(--link); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+code { font: 13px var(--mono); }
+.hint { color: var(--muted); font-size: 14.5px; }
+p.hint { max-width: 80ch; }
+.spacer { flex: 1; }
+.caps, .label, .island-label, .chip, table.data th, .box-title, .card h3 {
+  font-family: var(--display); font-weight: 500; text-transform: uppercase; }
+
+/* Frame */
+.app { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
+.sidebar { position: sticky; top: 0; height: 100vh; width: 248px; background: var(--rail); border-right: 1px solid var(--line); z-index: 20; display: flex; flex-direction: column; overflow: hidden; }
+.canvas-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+#contours { position: absolute; top: 0; left: 0; width: 248px; height: 100%; }
+.sidebar-content { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100%; padding: 16px; }
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; height: 42px; padding: 0 6px 0 12px;
+                  margin-bottom: 20px; background: var(--nav-bg); color: var(--nav-text); border: 2px solid var(--nav-line); box-shadow: var(--shadow-sm); }
+.brand { font: 500 14px var(--display); letter-spacing: 2px; white-space: nowrap; }
+.sidebar nav { display: flex; flex-direction: column; gap: 8px; }
+.nav-btn { position: relative; display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 12px; cursor: pointer;
+           background: var(--nav-bg); color: var(--nav-text); border: 2px solid var(--nav-line); box-shadow: var(--shadow-sm);
+           font: 600 15.5px/1.2 var(--body); letter-spacing: .3px; text-align: left; }
+.nav-btn svg { width: 17px; height: 17px; fill: currentColor; flex: none; }
+.nav-btn:hover { border-color: var(--accent); }
+[data-theme="brutal"] .nav-btn:hover { border-color: var(--nav-line); background: #fff4df; }
+.nav-btn.active { background: var(--nav-on-bg); color: var(--nav-on-text); border-color: var(--nav-on-bg); }
+.nav-meta { margin-left: auto; font: 500 12px var(--mono); display: inline-flex; align-items: center; gap: 6px; }
+.nav-meta:not(:empty)::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: blink 1.2s steps(1) infinite; }
+.sidebar-bottom { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--nav-line); }
+@keyframes blink { 50% { opacity: 0; } }
+.column { min-width: 0; width: 100%; max-width: 1320px; padding: 22px clamp(18px, 3vw, 40px) 56px; }
+footer { color: var(--muted); font: 12px var(--mono); margin-top: 40px; }
+
+/* Top bars */
+header.top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px 24px; margin-bottom: 30px; }
+.island { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 10px; background: var(--bar);
+          color: var(--bar-text); border: 1px solid var(--line); box-shadow: var(--shadow-lg); }
+.island-label { align-self: stretch; display: flex; align-items: center; padding: 0 10px 0 2px; margin-right: 2px;
+                border-right: 1px solid var(--line); color: var(--bar-muted); font-size: 10px; letter-spacing: 1.6px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 10.5px; letter-spacing: 1px;
+        color: var(--bar-text); white-space: nowrap; font-family: var(--display); text-transform: uppercase; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--bar-muted); opacity: .6; }
+.chip.ok::before { background: var(--ok); opacity: 1; }
+.chip.warn::before { background: var(--warn); opacity: 1; }
+.text-btn { font: 500 10.5px/1 var(--display); letter-spacing: 1px; text-transform: uppercase; color: var(--bar-text); cursor: pointer;
+            background: transparent; border: 2px solid var(--line); padding: 9px 12px; min-height: 34px; white-space: nowrap; }
+.text-btn:hover { background: var(--hover); border-color: var(--accent); }
+
+/* Cards */
+.card { background: var(--panel); border: 2px solid var(--line); box-shadow: var(--shadow-sm); padding: 20px 22px 22px; margin: 0 0 30px; }
+.card h3, .box-title { font-size: 13px; letter-spacing: 2px; margin: 0 0 12px; }
+.headline { font: 600 26px/1.2 var(--display); letter-spacing: .5px; margin: 0 0 10px; }
+.lede { font-size: 17.5px; max-width: 70ch; margin: 0; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0; }
+.status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.label { width: 120px; color: var(--muted); font-size: 10.5px; letter-spacing: 1.2px; font-family: var(--display); text-transform: uppercase; }
+
+/* Buttons */
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
+.btn { font: 700 15px/1 var(--body); letter-spacing: .6px; padding: 11px 18px; cursor: pointer; color: var(--text);
+       background: var(--panel); border: 2px solid var(--line); box-shadow: var(--shadow-sm); }
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); }
+.btn:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover:not(:disabled) { box-shadow: var(--shadow-lg); }
+[data-theme="brutal"] .btn.primary { border-color: var(--line); }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .35; cursor: not-allowed; box-shadow: none; }
+.linkish { font: 700 15px var(--body); background: none; border: 0; padding: 0; cursor: pointer; color: var(--link);
+           text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.linkish:hover { text-decoration-color: currentColor; }
+
+/* Controls */
+select, input[type=number], input[type=text], textarea {
+  font: 500 16px/1.4 var(--body); color: var(--text); background: var(--glass); border: 2px solid var(--line); border-radius: 0;
+  padding: 8px 12px; max-width: 100%; }
+select { cursor: pointer; }
+select option { background: var(--panel); color: var(--text); }
+input[type=number] { width: 100px; font: 500 15px var(--mono); }
+textarea { width: 100%; resize: vertical; line-height: 1.5; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+input[type=checkbox] { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 36px; height: 20px; margin: 0;
+                       background: var(--glass); border: 2px solid var(--line); cursor: pointer; }
+input[type=checkbox]::before { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: var(--muted); transition: transform .2s; }
+input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:checked::before { transform: translateX(16px); background: var(--on-accent); }
+.check { display: inline-flex; gap: 12px; align-items: center; cursor: pointer; font-weight: 600; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--glass); border: 2px solid var(--line); }
+.seg label { position: relative; padding: 9px 14px; cursor: pointer; user-select: none; color: var(--muted);
+             font: 500 10.5px/1.2 var(--display); letter-spacing: 1.2px; text-transform: uppercase; }
+.seg label + label { border-left: 1px solid var(--line); }
+.seg label:hover { color: var(--text); background: var(--hover); }
+.seg label.on { background: var(--accent); color: var(--on-accent); }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg.small label { padding: 7px 11px; font-size: 10px; }
+.field { margin: 24px 0 0; }
+.field > label, .field > .name { display: block; font-weight: 700; font-size: 16.5px; }
+.field > .hint { margin: 2px 0 8px; }
+.presets { display: flex; flex-wrap: wrap; gap: 10px; }
+.presets button { font: 600 15px var(--body); padding: 6px 14px; border: 2px solid var(--line); background: var(--glass); color: var(--text); cursor: pointer; }
+.presets button:hover { background: var(--hover); }
+.presets button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.two { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 0 44px; align-items: start; }
+.badge { display: inline-block; font: 500 9.5px/1.4 var(--display); letter-spacing: 1px; text-transform: uppercase; padding: 3px 8px;
+         border: 1px solid var(--line); color: var(--muted); }
+.badge.ok { border-color: var(--ok); color: var(--ok); }
+.badge.warn { border-color: var(--warn); color: var(--warn); }
+
+/* Run tab */
+#tab-run { display: grid; grid-template-columns: minmax(290px, 370px) minmax(0, 1fr); grid-template-rows: auto 1fr; gap: 0 36px; align-items: start; }
+.run-head { grid-column: 1; grid-row: 1; }
+.deck { grid-column: 1; grid-row: 2; }
+.monitor { grid-column: 2; grid-row: 1 / 3; }
+.run-head .state { font: 600 clamp(26px, 2.4vw, 34px)/1.1 var(--display); letter-spacing: 4px; text-transform: uppercase; margin: 0 0 10px; white-space: nowrap; }
+.run-head .state.live::after { content: "_"; animation: blink 1.1s steps(1) infinite; }
+.run-head .detail { color: var(--muted); font-size: 15px; margin: 0; }
+.run-head .clock { display: block; margin-top: 8px; font: 500 13px var(--mono); color: var(--text); }
+.track { height: 3px; background: var(--rule); margin: 14px 0 0; overflow: hidden; }
+.track i { display: block; width: 0; height: 100%; background: var(--accent); transition: width 1s linear; }
+.control { margin: 0 0 20px; }
+.control .label { display: block; width: auto; margin: 0 0 8px; }
+.control .hint { margin: 6px 0 0; }
+.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.monitor { padding: 0; box-shadow: var(--shadow-lg); overflow: hidden; }
+.monitor-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 14px 12px 18px;
+                background: var(--bar); color: var(--bar-text); border-bottom: 2px solid var(--line); }
+.monitor-head .island-label { align-self: auto; padding: 4px 12px 4px 0; }
+.tally { font: 500 12.5px var(--mono); color: var(--bar-text); }
+.stream { height: 660px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.v-row { display: grid; grid-template-columns: 50px minmax(0, 1fr) auto; gap: 2px 16px; padding: 13px 16px 13px 12px;
+         border-left: 3px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.v-row.watched { border-left-color: var(--ok); }
+.v-row.skipped { border-left-color: var(--warn); }
+.v-seq { font: 500 12px var(--mono); color: var(--muted); padding-top: 3px; }
+.v-main { min-width: 0; }
+.v-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.v-head .who { font-weight: 700; font-size: 16.5px; color: var(--text); text-decoration: none; }
+.v-head .kind { font: 12px var(--mono); color: var(--muted); }
+.v-main .topic { margin-top: 1px; font-size: 16px; }
+.v-main .summary { margin-top: 3px; color: var(--muted); font-size: 15px; }
+.v-main .extras { margin-top: 4px; font: 500 10px var(--display); letter-spacing: 1px; text-transform: uppercase; }
+.v-verdict { text-align: right; min-width: 132px; }
+.stamp { font: 600 11.5px/1.3 var(--display); letter-spacing: 1.4px; text-transform: uppercase; }
+.v-row.watched .stamp, .v-row.watched .meter { color: var(--ok); }
+.v-row.skipped .stamp, .v-row.skipped .meter { color: var(--warn); }
+.dwell { margin-top: 6px; font: 12px var(--mono); color: var(--muted); }
+.meter { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; font: 500 12px var(--mono); }
+.meter b { display: block; width: 56px; height: 3px; background: var(--rule); overflow: hidden; }
+.meter b i { display: block; height: 100%; background: currentColor; }
+.v-note { padding: 12px 16px 12px 65px; border-left: 3px solid transparent; border-bottom: 1px solid var(--rule);
+          font: 12.5px/1.6 var(--mono); color: var(--muted); }
+.v-note div::before { content: "// "; }
+pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var(--rule); margin-top: 18px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.55 var(--mono); }
+@keyframes arrive { from { transform: translateY(-8px); opacity: 0; } }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+
+/* Feed tab */
+.chart { position: relative; margin-top: 8px; max-width: 980px; }
+.chart svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 15px; color: var(--muted); margin: 10px 0 4px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; }
+table.data { width: 100%; border-collapse: collapse; font-size: 15.5px; margin-top: 10px; }
+table.data th, table.data td { text-align: left; padding: 10px 10px; vertical-align: baseline; }
+table.data th { font-size: 10px; letter-spacing: 1.2px; color: var(--muted); border-bottom: 2px solid var(--line); }
+table.data td { border-bottom: 1px solid var(--rule); }
+table.data .num { text-align: right; font: 500 13px var(--mono); }
+h4.sub { font: 500 11px/1.3 var(--display); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); margin: 28px 0 8px; }
+ul.plain { list-style: none; margin: 8px 0 0; padding: 0; }
+ul.plain li { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid var(--rule); }
+ul.plain li b { font: 500 13px var(--mono); white-space: nowrap; }
+
+/* Digest / Story */
+.story { background: var(--panel); border: 2px solid var(--line); box-shadow: var(--shadow-sm); padding: 18px 22px; margin: 0 0 18px; max-width: 920px; }
+.story-head { display: flex; gap: 14px; align-items: baseline; }
+.story h3 { margin: 0; font: 600 17px/1.35 var(--display); letter-spacing: .3px; }
+.story p { margin: 8px 0 0; max-width: 72ch; }
+.score { font: 500 12.5px var(--mono); color: var(--muted); }
+.meta { margin-top: 12px; font-size: 15px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+ul.news { margin: 10px 0 0; padding-left: 18px; font-size: 15.5px; }
+ul.news .src { color: var(--muted); margin-left: 8px; }
+
+/* Toast */
+#toast { position: fixed; right: 20px; bottom: 20px; z-index: 50; max-width: min(420px, calc(100vw - 40px)); padding: 11px 16px;
+         background: var(--panel); color: var(--text); border: 2px solid var(--line); border-left: 5px solid var(--ok);
+         box-shadow: var(--shadow-lg); font-size: 15.5px; font-weight: 600; }
+.demo-banner { background: var(--accent); color: var(--on-accent); padding: 6px 18px; font: 600 12px var(--display); letter-spacing: 2px;
+               text-transform: uppercase; text-align: center; }
+
+/* Responsive */
+@media (max-width: 1100px) {
+  #tab-run, .two { grid-template-columns: minmax(0, 1fr); }
+  .run-head, .deck, .monitor { grid-column: 1; grid-row: auto; }
+}
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; bottom: 0; left: 0; right: 0; height: auto; width: auto; border-right: 0; border-top: 1px solid var(--line); z-index: 30; }
+  .canvas-clip, .sidebar-header { display: none; }
+  .sidebar nav { flex-direction: row; justify-content: space-around; gap: 0; }
+  .nav-btn { flex-direction: column; gap: 3px; width: auto; padding: 6px 2px; background: transparent; border: 0; box-shadow: none; font-size: 11px; border-top: 2px solid transparent; }
+  .nav-btn.active { background: transparent; color: var(--bar-text); border-top-color: var(--bar-text); }
+  .column { padding: 16px 16px 100px; }
+}
+</style>
+</head>
+<body>
+<div class="demo-banner">⬡ STATIC DEMO — This is an interactive preview of the PRAG control panel. No live data.</div>
+<div class="app">
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="canvas-clip"><canvas id="contours" aria-hidden="true"></canvas></div>
+    <div class="sidebar-content">
+      <div class="sidebar-header">
+        <span class="brand">PRAG_</span>
+      </div>
+      <nav aria-label="Sections">
+        <button class="nav-btn active" data-tab="run" title="Run"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><span class="btn-text">Run</span><span class="nav-meta">12:47</span></button>
+        <button class="nav-btn" data-tab="feed" title="Feed"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="btn-text">Feed</span></button>
+        <button class="nav-btn" data-tab="digest" title="Digest"><svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg><span class="btn-text">Digest</span></button>
+        <button class="nav-btn" data-tab="report" title="Report"><svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span class="btn-text">Report</span></button>
+        <button class="nav-btn" data-tab="bias" title="Persona"><svg viewBox="0 0 24 24"><path d="M9 11.75a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zm6 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/></svg><span class="btn-text">Persona</span></button>
+        <button class="nav-btn" data-tab="schedule" title="Schedule"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span class="btn-text">Schedule</span></button>
+        <button class="nav-btn" data-tab="accounts" title="Accounts"><svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg><span class="btn-text">Accounts</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav-btn" id="theme-btn" title="Theme"><svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg><span class="btn-text">Theme</span></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN CONTENT ═══ -->
+  <div class="column">
+    <header class="top">
+      <div class="island">
+        <span class="island-label">Account</span>
+        <select id="account" aria-label="Account">
+          <option value="mlproject01" selected>@mlproject01</option>
+          <option value="mlproject02">@mlproject02</option>
+        </select>
+        <button class="text-btn">News follower (India)</button>
+      </div>
+      <div class="island">
+        <span class="island-label">System</span>
+        <span class="chip ok">LLM ready</span>
+        <span class="chip">78 of 120 min today</span>
+        <span class="chip">Live session done today</span>
+        <span class="chip">On power</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- ═══ TAB: RUN ═══ -->
+      <section id="tab-run">
+        <div class="run-head card">
+          <div class="state live">Scrolling</div>
+          <p class="detail">Session for @mlproject01 (mixed, 40 min), then the digest</p>
+          <div class="track"><i style="width:32%"></i></div>
+          <span class="clock">12:47 of 40:00</span>
+        </div>
+        <div class="deck card">
+          <h3>Next session</h3>
+          <div class="control">
+            <span class="label">Engagement</span>
+            <div class="seg">
+              <label class="on"><input type="radio" name="eng" value="mixed" checked> Mixed</label>
+              <label><input type="radio" name="eng" value="live"> Live</label>
+              <label><input type="radio" name="eng" value="dry"> Dry run</label>
+            </div>
+            <p class="hint">Live for the day's first session, dry runs after. Next run: dry run (today's live session already ran).</p>
+          </div>
+          <div class="control">
+            <label class="label" for="minutes">Minutes</label>
+            <div class="inline"><input id="minutes" type="number" min="1" value="40"><span class="hint">42 of 120 min left today</span></div>
+          </div>
+          <div class="control">
+            <label class="check"><input type="checkbox"> Headless: no browser window</label>
+            <label class="check"><input type="checkbox" checked> Start LM Studio if it's off</label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" disabled>Start a dry run</button>
+            <button class="btn danger">Stop</button>
+          </div>
+          <div class="actions" style="margin-top:16px; gap:22px">
+            <button class="linkish" disabled>Rebuild the digest only</button>
+            <button class="linkish">Open the logs folder</button>
+          </div>
+        </div>
+        <div class="monitor card">
+          <div class="monitor-head">
+            <span class="island-label">Reels</span>
+            <span class="tally">74 reels · 49 watched · 6 liked</span>
+            <span class="spacer"></span>
+            <div class="seg small">
+              <label class="on"><input type="radio" name="view" value="reels" checked> Reels</label>
+              <label><input type="radio" name="view" value="raw"> Raw output</label>
+            </div>
+          </div>
+          <div class="stream" id="stream"></div>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: FEED ═══ -->
+      <section id="tab-feed" hidden>
+        <div class="card">
+          <div class="seg small" style="margin-bottom:16px">
+            <label class="on"><input type="radio" name="feed-scope" value="account" checked> This account</label>
+            <label><input type="radio" name="feed-scope" value="all"> All accounts</label>
+          </div>
+          <h2 class="headline">Curated <badge class="badge ok" style="font-size:11px; vertical-align:middle;">✓ Feed is curated</badge></h2>
+          <p class="lede">68% of the last 100 organic reels score above the watch threshold (target: 50%). The feed has been curated since session 7.</p>
+          <div class="actions">
+            <button class="btn primary">Download the curated feed (JSONL)</button>
+            <button class="btn">Curated feed as CSV</button>
+            <button class="btn">Everything shown (JSONL)</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>What the feed shows</h3>
+          <p class="hint">Organic reels only. 847 reels total: 312 in the warm-up, 535 in the curated feed.</p>
+          <div class="legend">
+            <span><i style="background:var(--viz-before)"></i>Warm-up</span>
+            <span><i style="background:var(--viz-after)"></i>Curated feed</span>
+          </div>
+          <div class="chart" id="feed-chart"></div>
+        </div>
+
+        <div class="card">
+          <div class="status"><h3>Topics the algorithm serves</h3><span class="spacer"></span><button class="btn">Retrain now</button></div>
+          <p class="hint">The feed model learns these from every account's reels together, so each persona's feed is described in the same topics and can be compared.</p>
+          <div class="two">
+            <div>
+              <h4 class="sub">How narrow the feed is</h4>
+              <p style="font-size:15.5px">Effective topics fell from <b>14.2</b> (warm-up) to <b>7.8</b> (curated). The algorithm is converging on a smaller set of topics.</p>
+              <table class="data">
+                <thead><tr><th>Day</th><th class="num">Reels</th><th class="num">Effective topics</th><th class="num">Drift from prev. day</th></tr></thead>
+                <tbody>
+                  <tr><td>Oct 19</td><td class="num">84</td><td class="num">7.4</td><td class="num">0.12</td></tr>
+                  <tr><td>Oct 18</td><td class="num">91</td><td class="num">8.1</td><td class="num">0.09</td></tr>
+                  <tr><td>Oct 17</td><td class="num">78</td><td class="num">8.6</td><td class="num">0.14</td></tr>
+                  <tr><td>Oct 16</td><td class="num">93</td><td class="num">9.2</td><td class="num">0.18</td></tr>
+                  <tr><td>Oct 15</td><td class="num">86</td><td class="num">10.4</td><td class="num">0.21</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h4 class="sub">Rising</h4>
+              <p class="hint">More of these in the last three days than before.</p>
+              <ul class="plain">
+                <li><span>Government policy & schemes</span><b>+38%</b></li>
+                <li><span>Economy & markets</span><b>+24%</b></li>
+                <li><span>Technology & AI</span><b>+16%</b></li>
+              </ul>
+              <h4 class="sub">What sets this persona apart</h4>
+              <p class="hint">Topics it's served more than the accounts overall.</p>
+              <ul class="plain">
+                <li><span>Breaking news</span><b>2.4×</b></li>
+                <li><span>Government policy</span><b>1.9×</b></li>
+                <li><span>Weather & safety</span><b>1.7×</b></li>
+              </ul>
+              <h4 class="sub">How alike the feeds are</h4>
+              <p class="hint">How much each pair of accounts' feeds share: 100% = same mix, 0% = nothing in common.</p>
+              <table class="data" id="alike">
+                <thead><tr><th style="font: 700 14px var(--body); letter-spacing: 0; text-transform: none; color: var(--text);"></th><th style="font: 700 14px var(--body); letter-spacing: 0; text-transform: none; color: var(--text);">mlproject01</th><th style="font: 700 14px var(--body); letter-spacing: 0; text-transform: none; color: var(--text);">mlproject02</th></tr></thead>
+                <tbody>
+                  <tr><td style="font-weight:700">mlproject01</td><td class="num">100%</td><td class="num">42%</td></tr>
+                  <tr><td style="font-weight:700">mlproject02</td><td class="num">42%</td><td class="num">100%</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Creators the feed serves most</h3>
+          <p class="hint">The 12 creators that appeared most, with their usual category and how often the agent watched.</p>
+          <table class="data">
+            <thead><tr><th>Creator</th><th>Category</th><th class="num">Reels</th><th class="num">Watched</th><th class="num">Avg. Score</th></tr></thead>
+            <tbody>
+              <tr><td><a href="#">@ndtv</a></td><td>Politics & Govt</td><td class="num">34</td><td class="num">31</td><td class="num">0.82</td></tr>
+              <tr><td><a href="#">@aabornewyork</a></td><td>World News</td><td class="num">28</td><td class="num">22</td><td class="num">0.76</td></tr>
+              <tr><td><a href="#">@indiatoday</a></td><td>Breaking News</td><td class="num">26</td><td class="num">24</td><td class="num">0.79</td></tr>
+              <tr><td><a href="#">@thelallantop</a></td><td>Explainer</td><td class="num">22</td><td class="num">19</td><td class="num">0.74</td></tr>
+              <tr><td><a href="#">@economictimes</a></td><td>Economy & Finance</td><td class="num">19</td><td class="num">18</td><td class="num">0.81</td></tr>
+              <tr><td><a href="#">@bbchindi</a></td><td>World News</td><td class="num">17</td><td class="num">15</td><td class="num">0.77</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: DIGEST ═══ -->
+      <section id="tab-digest" hidden>
+        <div class="row">
+          <select><option>2026-10-20</option><option>2026-10-19</option><option>2026-10-18</option></select>
+          <span class="hint">91 reels in 2 sessions, 38 minutes — 12 informative stories</span>
+        </div>
+        <div id="stories">
+          <div class="story">
+            <div class="story-head">
+              <h3>Budget 2027: FM Announces New Tax Slabs</h3>
+              <span class="score">0.94</span>
+              <span class="badge ok">Verified</span>
+            </div>
+            <p>Finance Minister announces revised income tax slabs for FY2027-28 with no tax up to ₹12 lakh, and new standard deduction of ₹85,000.</p>
+            <div class="meta">4 reels · @ndtv, @indiatoday, @economictimes, @thelallantop · First seen 9:14 AM</div>
+            <ul class="news">
+              <li>Budget 2027: FM revises income tax slabs, raises exemption limit<span class="src">— NDTV</span></li>
+              <li>No tax up to ₹12 lakh: Key Budget 2027 announcements<span class="src">— Economic Times</span></li>
+            </ul>
+          </div>
+          <div class="story">
+            <div class="story-head">
+              <h3>ISRO Launches PSLV-C62 with Navigation Satellite</h3>
+              <span class="score">0.89</span>
+              <span class="badge ok">Verified</span>
+            </div>
+            <p>ISRO successfully launches PSLV-C62 carrying NVS-02, the second satellite in India's next-gen navigation constellation, from Sriharikota.</p>
+            <div class="meta">3 reels · @isro_official, @ndtv, @indianexpress · First seen 10:42 AM</div>
+            <ul class="news">
+              <li>ISRO's PSLV-C62 successfully places NavIC satellite NVS-02 in orbit<span class="src">— The Hindu</span></li>
+            </ul>
+          </div>
+          <div class="story">
+            <div class="story-head">
+              <h3>Supreme Court Hearing on Electoral Bonds</h3>
+              <span class="score">0.87</span>
+              <span class="badge ok">Verified</span>
+            </div>
+            <p>Supreme Court asks SBI to submit complete electoral bond data by next hearing, warns of contempt proceedings for non-compliance.</p>
+            <div class="meta">2 reels · @baabornewyork, @livelaw_in · First seen 11:30 AM</div>
+          </div>
+          <div class="story">
+            <div class="story-head">
+              <h3>Cyclone Alert: IMD Issues Warning for AP & Odisha Coast</h3>
+              <span class="score">0.85</span>
+              <span class="badge warn">Plausible</span>
+            </div>
+            <p>IMD issues orange alert for coastal Andhra Pradesh and Odisha as a low-pressure system intensifies in the Bay of Bengal. Landfall expected in 48 hours.</p>
+            <div class="meta">2 reels · @iabormd, @ndtv · First seen 12:18 PM</div>
+          </div>
+          <div class="story">
+            <div class="story-head">
+              <h3>RBI Keeps Repo Rate Unchanged at 6%</h3>
+              <span class="score">0.83</span>
+              <span class="badge ok">Verified</span>
+            </div>
+            <p>RBI's monetary policy committee maintains repo rate at 6%, shifts stance to "neutral" from "withdrawal of accommodation". GDP growth forecast retained at 7.2%.</p>
+            <div class="meta">3 reels · @economictimes, @live_mint, @indiatoday · First seen 1:45 PM</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: REPORT ═══ -->
+      <section id="tab-report" hidden>
+        <div class="card">
+          <h2 class="headline">Is the feed curated yet?</h2>
+          <div class="status"><span class="hint">The verdict needs 100 judged reels.</span>
+            <button class="linkish">Check again</button></div>
+          <pre class="report">──────────────────────────────────────────────────────────────
+PRAG — Curation Report for @mlproject01
+Persona: News follower (India)      Scorer: Qwen 3.5 9B (llm)
+──────────────────────────────────────────────────────────────
+
+VERDICT:  ✓ Curated (68% informative, target 50%)
+The feed has been curated since session 7.
+
+Sessions: 12 (10 live, 2 dry)    Reels: 847    Ads skipped: 94
+
+Share of informative reels per session:
+  S1  ▂ 18%     S5  ▄ 41%     S9  ▇ 71%
+  S2  ▂ 22%     S6  ▅ 48%     S10 ▇ 69%
+  S3  ▃ 29%     S7  ▆ 55%     S11 █ 74%
+  S4  ▃ 34%     S8  ▆ 62%     S12 █ 72%
+
+Watch time by decision:
+  SKIP          1.8s avg    (432 reels)
+  WATCH         9.2s avg    (186 reels)
+  FULL_WATCH   22.4s avg    (135 reels)
+  REWATCH      48.7s avg     (54 reels)
+  (Ads)         1.9s avg     (94 reels)
+
+What decided each reel:
+  LLM score     642  (75.8%)
+  Keyword gate  108  (12.8%)   audit: 0 valuable reels gated
+  Creator mem.   52   (6.1%)   audit: 0 valuable reels skipped
+  Quick rules    45   (5.3%)
+
+Top topics (curated feed):
+  1. Government policy & schemes    84 reels
+  2. Breaking news & current events 76 reels
+  3. Economy, markets & tax         62 reels
+  4. Technology & AI                48 reels
+  5. Court rulings & law            38 reels
+
+Engagement:
+  ❤  Likes: 82 total (avg 6.8/session)
+  🔖 Saves: 24 total (avg 2.0/session)
+  ➕ Follows: 18 creators followed
+──────────────────────────────────────────────────────────────</pre>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: PERSONA ═══ -->
+      <section id="tab-bias" hidden>
+        <div class="card">
+          <div class="status"><h2 class="headline">News follower (India)</h2></div>
+          <p class="hint">Scoring as a persona: the LLM judges every reel by how likely this person is to watch it to the end, like and follow.</p>
+          <div class="field"><div class="name">Presets</div>
+            <p class="hint">Picking one fills in the form below; nothing changes until you save.</p>
+            <div class="presets">
+              <button class="on">News follower</button>
+              <button>Right-leaning voter</button>
+              <button>Left-leaning voter</button>
+              <button>Tech enthusiast</button>
+              <button>Investor</button>
+              <button>Science & Health</button>
+            </div>
+          </div>
+          <div class="two">
+            <div>
+              <div class="field"><label for="b-name">Persona name</label>
+                <input type="text" id="b-name" value="News follower (India)"></div>
+              <div class="field"><label for="b-interests">Who this person is, and what they engage with</label>
+                <p class="hint">The LLM scores every reel by how likely this person is to watch it to the end, like and follow. Describe the whole person, not just one side of them.</p>
+                <textarea id="b-interests" rows="14">Who this person is: a 30-year-old office worker in Delhi who follows the news every day, in Hindi and English. Cares about politics and where the country is going without being loyal to any party, and about prices, jobs, exams and safety.
+
+What they watch to the end, like and follow: breaking news and current affairs from national news channels, newspapers and reporters; government decisions and new schemes; the economy, prices and the markets; court rulings; weather and safety alerts; space missions and science; explainers about how things work; cricket results.
+
+What they scroll past: memes, pranks, dance trends, celebrity gossip, astrology, motivational quotes, and anyone selling something.</textarea></div>
+            </div>
+            <div>
+              <div class="field"><label for="b-watch">Watch words</label>
+                <p class="hint">When LM Studio is off, the quick rules watch reels whose caption contains one of these.</p>
+                <textarea class="words" id="b-watch" rows="3">news, breaking, alert, update, government, govt, yojana, scheme, policy, rbi, sebi, gst, tax, budget, election, police, scam, fraud, exam, result, recruitment, jobs, upsc, neet, jee, economy, sensex, nifty, isro, cyclone, earthquake, warning</textarea></div>
+              <div class="field"><label for="b-skip">Skip words</label>
+                <p class="hint">Reels with these are skipped instantly. Leave out anything this person enjoys.</p>
+                <textarea class="words" id="b-skip" rows="3">cooking, recipe, foodie, gaming, pubg, makeup, beauty, skincare, fashion, dance, bollywood, comedy, funny, meme, fitness, workout, gym, bhakti, bhajan, astrology, horoscope</textarea></div>
+              <div class="field"><label>Accounts to follow first</label>
+                <p class="hint">Pages this person would really follow. Following them gives a fresh account a head start.</p>
+                <textarea class="words" rows="2">ndtv, indiatoday, the_hindu, indianexpress, aajtak, bbchindi, thelallantop, economictimes, live_mint, mygovindia</textarea>
+                <div class="actions"><button class="btn">Check them</button><button class="btn">Follow them</button></div></div>
+            </div>
+          </div>
+          <div class="actions"><button class="btn primary">Save persona</button></div>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: SCHEDULE ═══ -->
+      <section id="tab-schedule" hidden>
+        <div class="two">
+          <div class="card">
+            <h3>Schedule this account</h3>
+            <div class="row"><span class="label">Times</span><input type="text" value="09:00, 14:00, 20:00" style="width:260px"></div>
+            <div class="row"><span class="label">Engagement</span>
+              <select><option>Mixed</option><option>Live</option><option>Dry run</option></select></div>
+            <div class="row"><span class="label">Minutes</span><input type="number" value="40" min="1"></div>
+            <div class="row"><span class="label">Browser</span><label class="check"><input type="checkbox"> Headless</label></div>
+            <div class="row"><span class="label"></span><label class="check"><input type="checkbox" checked> Start LM Studio</label></div>
+            <div class="actions"><button class="btn primary">Install schedule</button></div>
+            <p class="hint" style="margin-top:14px">Runs every day at these times while you're logged in to the Mac.</p>
+          </div>
+          <div class="card">
+            <h3>Installed</h3>
+            <div style="padding:14px 0; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-weight:700">@mlproject01</div>
+                <div class="hint">Every day at 09:00, 14:00, 20:00 · Mixed · 40 min · Start LM Studio</div>
+              </div>
+              <button class="btn danger" style="font-size:13px; padding:8px 14px;">Remove</button>
+            </div>
+            <div style="padding:14px 0; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-weight:700">@mlproject02</div>
+                <div class="hint">Every day at 10:00, 16:00 · Mixed · 40 min · Start LM Studio</div>
+              </div>
+              <button class="btn danger" style="font-size:13px; padding:8px 14px;">Remove</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ TAB: ACCOUNTS ═══ -->
+      <section id="tab-accounts" hidden>
+        <div class="card">
+          <h3>Instagram accounts</h3>
+          <table class="data">
+            <thead><tr><th>Username</th><th>Status</th><th>Persona</th><th class="num">Sessions</th><th class="num">Reels</th><th>Last used</th><th></th></tr></thead>
+            <tbody>
+              <tr><td style="font-weight:700">@mlproject01</td><td><span class="badge ok">Active</span></td><td>News follower (India)</td><td class="num">12</td><td class="num">847</td><td>Oct 20, 12:47</td><td class="num"><button class="linkish">Password</button> · <button class="linkish danger">Delete</button></td></tr>
+              <tr><td style="font-weight:700">@mlproject02</td><td><span class="badge ok">Active</span></td><td>Right-leaning voter (India)</td><td class="num">9</td><td class="num">634</td><td>Oct 20, 10:32</td><td class="num"><button class="linkish">Password</button> · <button class="linkish danger">Delete</button></td></tr>
+            </tbody>
+          </table>
+          <p class="hint">Passwords are kept only in accounts.json on this Mac, readable only by you. Use accounts made for PRAG, not your personal one.</p>
+        </div>
+        <div class="card">
+          <h3>Add an account</h3>
+          <div class="row"><span class="label">Username</span><input type="text" placeholder="instagram_username" style="width:320px"></div>
+          <div class="row"><span class="label">Password</span><input type="password" style="width:320px"></div>
+          <p class="hint">Optional: without one, PRAG asks for it when it first logs in.</p>
+          <div class="actions"><button class="btn primary">Add account</button></div>
+        </div>
+      </section>
+    </main>
+    <footer>Only this Mac can open this panel. Closing it doesn't stop a run in progress. · Built by KIDRAAH_</footer>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>
+"use strict";
+
+// ── Tab navigation ──
+document.querySelectorAll('.nav-btn[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-btn[data-tab]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('main > section').forEach(s => s.hidden = true);
+    const tab = document.getElementById('tab-' + btn.dataset.tab);
+    if (tab) tab.hidden = false;
+  });
+});
+
+// ── Theme toggle ──
+document.getElementById('theme-btn').addEventListener('click', () => {
+  const brutal = document.documentElement.getAttribute('data-theme') === 'brutal';
+  if (brutal) document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', 'brutal');
+  Contours.recolor();
+});
+
+// ── Simulated reel stream data ──
+const REELS = [
+  { seq: 74, who: '@ndtv', kind: 'original 32s', topic: 'Budget 2027 Tax Changes', summary: 'FM announces revised income tax slabs for FY2027-28, no tax up to ₹12 lakh', score: 0.94, action: 'REWATCH', dwell: '64.2s', engagement: 'Liked, Saved' },
+  { seq: 73, who: '@thelallantop', kind: 'original 28s', topic: 'Supreme Court Electoral Bonds', summary: 'SC asks SBI to submit complete electoral bond data by next hearing', score: 0.87, action: 'FULL_WATCH', dwell: '26.8s', engagement: 'Liked' },
+  { seq: 72, who: '@dance_queen_45', kind: 'music 15s', topic: 'Skip word: dance', summary: '', score: null, action: 'SKIP', dwell: '0.8s', engagement: '' },
+  { seq: 71, who: '@economictimes', kind: 'original 24s', topic: 'RBI Repo Rate Decision', summary: 'RBI MPC keeps repo rate unchanged at 6%, shifts stance to neutral', score: 0.83, action: 'FULL_WATCH', dwell: '23.1s', engagement: '' },
+  { seq: 70, who: '(ad)', kind: '', topic: '', summary: 'Sponsored: Phonepe', score: null, action: 'SKIP', dwell: '1.9s', engagement: '' },
+  { seq: 69, who: '@isro_official', kind: 'original 45s', topic: 'PSLV-C62 Launch', summary: 'ISRO successfully launches NVS-02 navigation satellite from Sriharikota', score: 0.89, action: 'REWATCH', dwell: '72.4s', engagement: 'Liked' },
+  { seq: 68, who: '@fitness_guru_in', kind: 'music 18s', topic: 'Skip word: workout', summary: '', score: null, action: 'SKIP', dwell: '0.7s', engagement: '' },
+  { seq: 67, who: '@indiatoday', kind: 'original 22s', topic: 'Cyclone Alert Bay of Bengal', summary: 'IMD issues orange alert for AP and Odisha coast, landfall expected in 48 hours', score: 0.85, action: 'FULL_WATCH', dwell: '21.4s', engagement: '' },
+  { seq: 66, who: '@bbchindi', kind: 'original 38s', topic: 'China-India Border Talks', summary: 'India-China hold 22nd round of commander-level talks on LAC disengagement', score: 0.78, action: 'FULL_WATCH', dwell: '35.2s', engagement: 'Liked' },
+  { seq: 65, who: '@meme_central_in', kind: 'music 12s', topic: 'Skip word: meme', summary: '', score: null, action: 'SKIP', dwell: '0.9s', engagement: '' },
+  { seq: 64, who: '@live_mint', kind: 'original 26s', topic: 'Sensex Crosses 90,000', summary: 'Sensex crosses the 90,000 mark for the first time, Nifty at record high of 27,100', score: 0.81, action: 'FULL_WATCH', dwell: '24.8s', engagement: '' },
+  { seq: 63, who: '@tech_burner', kind: 'original 20s', topic: 'iPhone 18 Leak', summary: 'Leaked specs of iPhone 18 Pro suggest under-display Face ID and A20 Pro chip', score: 0.52, action: 'WATCH', dwell: '11.4s', engagement: '' },
+  { seq: 62, who: '@unknown_recipe_page', kind: 'music 25s', topic: 'Skip word: recipe', summary: '', score: null, action: 'SKIP', dwell: '0.6s', engagement: '' },
+  { seq: 61, who: '@indianexpress', kind: 'original 34s', topic: 'PM Modi UN Speech', summary: 'PM Modi addresses UN General Assembly, calls for reformed multilateralism and permanent UNSC seat for India', score: 0.91, action: 'REWATCH', dwell: '58.6s', engagement: 'Liked, Saved' },
+  { seq: 60, who: '@aajtak', kind: 'original 19s', topic: 'Delhi Air Quality', summary: 'Delhi AQI crosses 400, GRAP Stage 3 restrictions imposed', score: 0.79, action: 'FULL_WATCH', dwell: '18.2s', engagement: '' },
+  { seq: 59, who: '@astro_predictions_in', kind: 'original 30s', topic: 'A creator that\'s never been valuable', summary: '', score: null, action: 'SKIP', dwell: '1.1s', engagement: '' },
+  { seq: 58, who: '@mygovindia', kind: 'original 16s', topic: 'New PM Vishwakarma Scheme', summary: 'Government launches updated PM Vishwakarma scheme with ₹15,000 tool kit and ₹3 lakh loan at 5% interest', score: 0.88, action: 'FULL_WATCH', dwell: '15.8s', engagement: 'Liked' },
+];
+
+// ── Render the reel stream ──
+function renderStream() {
+  const stream = document.getElementById('stream');
+  REELS.forEach(r => {
+    const isAd = r.who === '(ad)';
+    const isSkip = r.action === 'SKIP';
+    const isWatched = !isSkip;
+    const tone = isAd ? 'other' : isSkip ? 'skipped' : 'watched';
+    const stampText = isAd ? 'Ad' : isSkip ? 'Skipped' : r.action === 'WATCH' ? 'Watched' : r.action === 'FULL_WATCH' ? 'Watched fully' : 'Rewatched';
+
+    const row = document.createElement('div');
+    row.className = 'v-row ' + tone;
+
+    let meterHtml = '';
+    if (r.score !== null) {
+      const w = Math.round(r.score * 100);
+      meterHtml = `<div class="meter"><b><i style="width:${w}%"></i></b><span>${r.score.toFixed(2)}</span></div>`;
+    }
+
+    let extrasHtml = '';
+    if (r.engagement) extrasHtml = `<div class="extras">${r.engagement}</div>`;
+
+    row.innerHTML = `
+      <span class="v-seq">#${r.seq}</span>
+      <div class="v-main">
+        <div class="v-head">
+          <span class="who">${isAd ? 'Ad' : r.who}</span>
+          ${r.kind ? `<span class="kind">${r.kind}</span>` : ''}
+        </div>
+        ${r.topic ? `<div class="topic">${r.topic}</div>` : ''}
+        ${r.summary ? `<div class="summary">${r.summary}</div>` : ''}
+        ${extrasHtml}
+      </div>
+      <div class="v-verdict">
+        <div class="stamp">${stampText}</div>
+        <div class="dwell">${r.dwell}</div>
+        ${meterHtml}
+      </div>
+    `;
+    stream.appendChild(row);
+  });
+
+  // Add session-start note at the bottom
+  const note = document.createElement('div');
+  note.className = 'v-note';
+  note.innerHTML = '<div>Session started · @mlproject01 · mixed (live) · Qwen 3.5 9B · Whisper Large V3 Turbo · OCR on</div>';
+  stream.appendChild(note);
+}
+
+// ── Render the feed chart (SVG bar chart) ──
+function renderFeedChart() {
+  const chart = document.getElementById('feed-chart');
+  const categories = [
+    { name: 'Politics & Govt', before: 32, after: 84 },
+    { name: 'Breaking News', before: 28, after: 76 },
+    { name: 'Economy & Finance', before: 18, after: 62 },
+    { name: 'Technology & AI', before: 22, after: 48 },
+    { name: 'Court & Law', before: 12, after: 38 },
+    { name: 'Weather & Safety', before: 8, after: 32 },
+    { name: 'Science & Space', before: 14, after: 28 },
+    { name: 'Sports', before: 24, after: 26 },
+    { name: 'Entertainment', before: 48, after: 18 },
+    { name: 'Lifestyle', before: 38, after: 14 },
+    { name: 'Comedy & Memes', before: 42, after: 12 },
+    { name: 'Devotional', before: 26, after: 8 },
+  ];
+
+  const max = Math.max(...categories.flatMap(c => [c.before, c.after]));
+  const barH = 22, gap = 8, labelW = 160, valW = 50, chartW = 350;
+  const totalH = categories.length * (barH * 2 + gap + 12) + 20;
+
+  let svg = `<svg viewBox="0 0 ${labelW + chartW + valW + 20} ${totalH}" xmlns="http://www.w3.org/2000/svg">`;
+  categories.forEach((c, i) => {
+    const y = i * (barH * 2 + gap + 12) + 10;
+    const w1 = (c.before / max) * chartW;
+    const w2 = (c.after / max) * chartW;
+    svg += `<text x="${labelW - 8}" y="${y + barH}" text-anchor="end" fill="var(--text)" font-family="var(--body)" font-size="14" font-weight="600">${c.name}</text>`;
+    svg += `<rect x="${labelW}" y="${y}" width="${w1}" height="${barH - 2}" fill="var(--viz-before)" rx="0"/>`;
+    svg += `<text x="${labelW + w1 + 6}" y="${y + barH - 5}" fill="var(--muted)" font-family="var(--mono)" font-size="11">${c.before}</text>`;
+    svg += `<rect x="${labelW}" y="${y + barH}" width="${w2}" height="${barH - 2}" fill="var(--viz-after)" rx="0"/>`;
+    svg += `<text x="${labelW + w2 + 6}" y="${y + barH * 2 - 5}" fill="var(--muted)" font-family="var(--mono)" font-size="11">${c.after}</text>`;
+  });
+  svg += `</svg>`;
+  chart.innerHTML = svg;
+}
+
+// ── Drifting Topography Shader (Sidebar WebGL animation) ──
+const CONTOUR_SHADER = `
+  #ifdef GL_FRAGMENT_PRECISION_HIGH
+  precision highp float;
+  #else
+  precision mediump float;
+  #endif
+  uniform float u_time; uniform vec2 u_resolution; uniform vec3 u_color; uniform float u_alpha;
+  vec4 permute(vec4 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
+  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+  float snoise(vec3 v) {
+    const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0); const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i = floor(v + dot(v, C.yyy)); vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz); vec3 l = 1.0 - g; vec3 i1 = min(g.xyz, l.zxy); vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx; vec3 x2 = x0 - i2 + 2.0 * C.xxx; vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+    i = mod(i, 289.0);
+    vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                     + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 1.0 / 7.0; vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z); vec4 x_ = floor(j * ns.z); vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy; vec4 y = y_ * ns.x + ns.yyyy; vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy); vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0) * 2.0 + 1.0; vec4 s1 = floor(b1) * 2.0 + 1.0; vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy; vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x); vec3 p1 = vec3(a0.zw, h.y); vec3 p2 = vec3(a1.xy, h.z); vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+    m = m * m; return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
+  }
+  void main() {
+    vec2 st = gl_FragCoord.xy / u_resolution.xy; st.x *= u_resolution.x / u_resolution.y;
+    vec2 pos = st * 1.5; vec2 warp = vec2(0.0);
+    warp.x = snoise(vec3(pos.x, pos.y, u_time * 0.005)) * 0.8;
+    warp.y = snoise(vec3(pos.x + 5.2, pos.y + 1.3, u_time * 0.008)) * 0.8;
+    pos += warp;
+    float n = snoise(vec3(pos.x, pos.y, u_time * 0.01)) * 0.5 + 0.5;
+    float line = fract(n * 8.0);
+    float contour = smoothstep(0.0, 0.06, line) * (1.0 - smoothstep(0.88, 1.0, line));
+    float a = contour * u_alpha;
+    gl_FragColor = vec4(u_color * a, a);
+  }`;
+
+const Contours = {
+  gl: null, u: null, time: 0, raf: null, last: 0, still: false, canvas: null,
+
+  init() {
+    const canvas = document.getElementById("contours");
+    if (!canvas) return;
+    const gl = canvas.getContext("webgl", {alpha: true, antialias: true});
+    if (!gl) return;
+    const compile = (type, source) => {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null;
+    };
+    const vertex = compile(gl.VERTEX_SHADER, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }");
+    const fragment = compile(gl.FRAGMENT_SHADER, CONTOUR_SHADER);
+    if (!vertex || !fragment) return;
+    const program = gl.createProgram();
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return;
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    const corner = gl.getAttribLocation(program, "p");
+    gl.enableVertexAttribArray(corner);
+    gl.vertexAttribPointer(corner, 2, gl.FLOAT, false, 0, 0);
+    this.gl = gl;
+    this.canvas = canvas;
+    this.u = Object.fromEntries(["u_time", "u_resolution", "u_color", "u_alpha"].map((n) => [n, gl.getUniformLocation(program, n)]));
+    this.still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.addEventListener("resize", () => this.resize());
+    document.addEventListener("visibilitychange", () => (document.hidden ? this.stop() : this.start()));
+    this.resize();
+    this.recolor();
+    this.start();
+  },
+
+  resize() {
+    if (!this.canvas || !this.gl) return;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const width = 248;
+    const height = window.innerHeight;
+    this.canvas.width = width * ratio;
+    this.canvas.height = height * ratio;
+    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    this.gl.uniform2f(this.u.u_resolution, width, height);
+    this.draw();
+  },
+
+  recolor() {
+    if (!this.gl) return;
+    const css = getComputedStyle(document.documentElement);
+    const raw = css.getPropertyValue("--contour").trim();
+    if (!raw) return;
+    const [r, g, b] = raw.split(",").map((n) => parseFloat(n) / 255);
+    this.gl.uniform3f(this.u.u_color, r, g, b);
+    this.gl.uniform1f(this.u.u_alpha, parseFloat(css.getPropertyValue("--contour-alpha")) || 0.18);
+    this.draw();
+  },
+
+  draw() {
+    if (!this.gl) return;
+    this.gl.uniform1f(this.u.u_time, this.time);
+    this.gl.clearColor(0, 0, 0, 0);
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+    this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
+  },
+
+  start() {
+    if (!this.gl || this.raf || this.still) return;
+    this.last = performance.now();
+    const tick = (now) => {
+      this.raf = requestAnimationFrame(tick);
+      if (now - this.last < 40) return;
+      this.time += (now - this.last) / 1000;
+      this.last = now;
+      this.draw();
+    };
+    this.raf = requestAnimationFrame(tick);
+  },
+
+  stop() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = null;
+  },
+};
+
+// ── Init ──
+renderStream();
+renderFeedChart();
+Contours.init();
+</script>
+</body>
+</html>
