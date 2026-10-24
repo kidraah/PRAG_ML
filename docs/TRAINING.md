@@ -157,6 +157,11 @@ python -m gradient update --lora   # …and continue each persona's LoRA adapter
 - **LoRA adapters are continued, not restarted.** A new version starts from the previous adapter and trains on
   the new batches' examples plus a replay sample of the old (30%). The replay guards against forgetting what
   earlier batches taught. Each version is a new folder (`lora-vN`), and the panel uses the newest.
+- **What continuing measured, honestly.** lora-v2 (300 steps on the latest-news reels, session reels and debate
+  examples, plus a 30% replay of the old) learned to debate and to talk about this week's stories, but on v1's
+  held-out examples its perplexity rose: @mlproject01 from 3.85 to 4.27, @mlproject02 from 3.34 to 4.34. Both are
+  still far below the base model's 80 and 131, and still lower on their own persona than on the other's. That's
+  partial forgetting. The next version should replay more of the old data, or train new and old together.
 - **After every Instagram session**, `daily.py` adds the session's reels to the corpus and has Jev label them.
   Retraining stays a deliberate step.
 - **If a persona's text changes,** its fingerprint changes, its items are judged again under the new persona, and
@@ -173,6 +178,8 @@ python -m gradient update --lora   # …and continue each persona's LoRA adapter
 - The grounded-answer examples are assembled from templates around the persona's takes, and the adapter picks up
   their phrasing: it tends to add "X saw it differently" even when the other reel agrees. Writing those answers
   with an LLM instead of a template is the next improvement to the training data.
+- Replies are short, often one sentence, because that's the voice the personas learned from their takes. Longer
+  answers would need longer training targets.
 - Citation checks and abstention training make answers better grounded. They can't guarantee a model never says
   something unsupported. And a persona believing something doesn't make it true: that's what the "Real or not"
   phase is for.

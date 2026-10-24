@@ -148,13 +148,15 @@ Versions, on the same frozen evaluation set:
 
 | Version | Examples | Steps | Minutes | Held-out ppl, base | With adapter | Adapter on the other persona |
 |---|---|---|---|---|---|---|
-| lora-v1 | 4,132 | 500 | 49.3 | 80.53 | 3.85 | 4.54 |
+| lora-v1 | 4,132 | 500 | 49.3 | 80.53 | 3.85 | 4.06 |
+| lora-v2 (continued) | 1,299 | 300 | 30.2 | 80.53 | 4.27 | 4.33 |
 
 ### @mlproject02: persona language model
 
 | Version | Examples | Steps | Minutes | Held-out ppl, base | With adapter | Adapter on the other persona |
 |---|---|---|---|---|---|---|
-| lora-v1 | 4,640 | 500 | 49.7 | 130.63 | 3.34 | 4.73 |
+| lora-v1 | 4,640 | 500 | 49.7 | 130.63 | 3.34 | 4.86 |
+| lora-v2 (continued) | 1,119 | 300 | 30.9 | 130.63 | 4.34 | 5.97 |
 
 Writing the reels cost $0.96 on OpenRouter.
 

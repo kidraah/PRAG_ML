@@ -1,6 +1,7 @@
 """Tests for the Gradient (gradient/) and Jev's cover images — no network, no LLM, no MLX."""
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -22,7 +23,7 @@ def fake_embed(texts):
     out = np.zeros((len(texts), 64), dtype=np.float32)
     for row, text in enumerate(texts):
         for word in text.lower().split():
-            out[row, hash(word.strip(".,!?#")) % 64] += 1
+            out[row, int(hashlib.md5(word.strip(".,!?#").encode()).hexdigest(), 16) % 64] += 1
     return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-9)
 
 

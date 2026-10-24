@@ -152,9 +152,9 @@ def debate_job(job: dict, conn) -> None:
                 ask = lora.DEBATE_OPEN.format(t=topic)
             else:
                 ask = lora.DEBATE_REPLY.format(t=topic, said=last[them])
-            turn = answer(conn, me, ask, query=f"{topic}. {last[them]}"[:600])
+            turn = answer(conn, me, ask, query=topic)
             if last[them] and turn["text"].strip()[:80] == last[them].strip()[:80]:  # it parroted: once more
-                turn = answer(conn, me, ask, query=f"{topic}. {last[them]}"[:600])
+                turn = answer(conn, me, ask, query=topic)
             last[me] = turn["text"]
             job["events"].append({"type": "turn", "round": r, **turn})
     turns = [e for e in job["events"] if e["type"] == "turn"]

@@ -23,7 +23,8 @@ just the format.
 
 Retraining over time: a new version starts from the previous adapter
 (--resume) and trains on what's new plus a replay sample of the old, so
-earlier knowledge isn't overwritten.
+earlier knowledge isn't overwritten. Every version is scored on the first
+version's held-out examples, so versions compare like for like.
 
     python -m gradient.lora --account mlproject01 [--iters 600] [--resume]
 """
@@ -236,6 +237,11 @@ def train(conn, account: str, iters: int = 500, resume: bool = False, progress=p
         rng = random.Random(version)
         replay = rng.sample(old["train"], min(len(old["train"]), int(len(fresh["train"]) * REPLAY_SHARE / (1 - REPLAY_SHARE)) + 1))
         examples = {"train": fresh["train"] + replay, "valid": old["valid"], "test": old["test"]}
+        first = os.path.join(DATA_DIR, account, "v1")  # every version is scored on v1's held-out examples
+        for name in ("valid", "test"):
+            if os.path.exists(os.path.join(first, f"{name}.jsonl")):
+                with open(os.path.join(first, f"{name}.jsonl")) as fh:
+                    examples[name] = [json.loads(line) for line in fh]
         rng.shuffle(examples["train"])
         batches = sorted(all_batches)
     else:
@@ -345,13 +351,35 @@ def evaluate(account: str, out_dir: str, data_dir: str, progress=print) -> dict:
     return result
 
 
+def rescore(conn, account: str, version: int, progress=print) -> dict:
+    """Evaluate an adapter again on the first version's held-out examples, and update its report."""
+    out_dir = adapter_dir(account, version)
+    with open(os.path.join(out_dir, "report.json")) as fh:
+        report = json.load(fh)
+    report["eval"] = evaluate(account, out_dir, os.path.join(DATA_DIR, account, "v1"), progress)
+    report["eval_set"] = "lora-v1 held-out examples"
+    with open(os.path.join(out_dir, "report.json"), "w") as fh:
+        json.dump(report, fh, indent=1)
+    conn.execute("UPDATE runs SET report = ? WHERE id = ?", (json.dumps(report), f"{account}-lora-v{version}"))
+    conn.commit()
+    e = report["eval"]
+    progress(f"@{account} lora-v{version} on v1's examples: {e['base']['ppl']} (base) → {e['adapter']['ppl']} "
+             f"(adapter); other persona {e.get('other', {}).get('ppl')}")
+    return report
+
+
 def write_shared_tests(conn) -> None:
     """Each persona's test examples, kept where the other persona's evaluation can read them."""
     for account in store.ACCOUNTS:
-        examples = build_examples(conn, account)
+        first = os.path.join(DATA_DIR, account, "v1", "test.jsonl")
+        if os.path.exists(first):  # fixed once the first adapter exists, so every version meets the same examples
+            with open(first) as fh:
+                rows = [json.loads(line) for line in fh]
+        else:
+            rows = build_examples(conn, account)["test"]
         os.makedirs(os.path.join(DATA_DIR, account), exist_ok=True)
         with open(os.path.join(DATA_DIR, account, "test-shared.jsonl"), "w") as fh:
-            for row in examples["test"][:150]:
+            for row in rows[:150]:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
@@ -360,8 +388,13 @@ def main() -> None:
     parser.add_argument("--account", required=True, choices=store.ACCOUNTS)
     parser.add_argument("--iters", type=int, default=500)
     parser.add_argument("--resume", action="store_true", help="continue from the latest adapter with what's new")
+    parser.add_argument("--rescore", type=int, metavar="N", help="only re-evaluate lora-vN on v1's held-out examples")
     args = parser.parse_args()
     conn = store.connect()
+    if args.rescore:
+        write_shared_tests(conn)
+        rescore(conn, args.account, args.rescore, progress=lambda m: print(m, flush=True))
+        return conn.close()
     write_shared_tests(conn)
     train(conn, args.account, args.iters, args.resume, progress=lambda m: print(m, flush=True))
     conn.close()
