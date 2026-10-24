@@ -17,7 +17,8 @@ from ml.dataset import reel_text
 from stories.grouping import clip
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "informative-embedding.joblib")
+MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "informative-embedding.joblib")  # the single shared file older versions saved
 FOLLOWED_FLOOR = 0.80  # a followed account's reel counts at least this much (the quick rules' follow signal)
 TRAILING_TAGS = re.compile(r"(?:(?:^|\s+)[#@][^\s#@]+)+\s*$")  # "... #news #india @ndtv" at a line's end
 ABBREVIATION = re.compile(r"(?:\b(?:Dr|Mr|Mrs|Ms|St|Jr|Sr|Prof|Gen|Col|Lt|Capt|Gov|Sen|Rep|No|Rs|vs|etc)|\b[A-Z])\.$")
@@ -46,20 +47,33 @@ def first_sentence(line: str) -> str:
     return sentence
 
 
+def path_for(bias=None, model_dir: str | None = None) -> str:
+    """The saved model for this bias: its own file (ml/train.py saves one per bias fingerprint and kind, so training
+    for one persona never overwrites another's), the newest of the two kinds; else the older shared file."""
+    model_dir = model_dir or MODEL_DIR
+    fingerprint = bias.fingerprint if bias is not None else DEFAULT_FINGERPRINT
+    own = [os.path.join(model_dir, f"informative-{fingerprint}-{kind}.joblib") for kind in ("embedding", "tfidf")]
+    own = [p for p in own if os.path.exists(p)]
+    if own:
+        return max(own, key=os.path.getmtime)
+    return os.path.join(model_dir, os.path.basename(MODEL_PATH))
+
+
 class ModelScorer:
     """Loads the saved model once; score() returns the probability a reel is informative."""
 
-    def __init__(self, path: str = MODEL_PATH):
+    def __init__(self, path: str | None = None, bias=None):
         import joblib
 
-        saved = joblib.load(path)
+        saved = joblib.load(path or path_for(bias))
         self.kind = saved["kind"]
         self.model = saved["model"]
         self.version = f"model-{saved['kind']}-{saved['created']}"
 
     @staticmethod
-    def trained_for(path: str = MODEL_PATH) -> str | None:
+    def trained_for(path: str | None = None, bias=None) -> str | None:
         """The interests fingerprint of the bias the saved model was trained for; None without a model."""
+        path = path or path_for(bias)
         if not os.path.exists(path):
             return None
         import joblib
@@ -67,10 +81,10 @@ class ModelScorer:
         return joblib.load(path).get("bias") or DEFAULT_FINGERPRINT  # saved before biases: the default's
 
     @staticmethod
-    def available(path: str = MODEL_PATH, bias=None) -> bool:
+    def available(path: str | None = None, bias=None) -> bool:
         """Whether a saved model exists — and, given a bias, was trained for its interests (labels judged
         under one bias say nothing about another)."""
-        trained = ModelScorer.trained_for(path)
+        trained = ModelScorer.trained_for(path, bias)
         return trained is not None and (bias is None or trained == bias.fingerprint)
 
     def probability(self, text: str) -> float:

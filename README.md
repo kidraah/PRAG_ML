@@ -12,10 +12,10 @@
 ![Playwright](https://img.shields.io/badge/playwright-chromium-0e0e11?style=flat-square&logo=playwright&logoColor=white)
 ![LM Studio](https://img.shields.io/badge/LLM-Qwen%203.5%209B%20local-0e0e11?style=flat-square)
 ![Whisper](https://img.shields.io/badge/speech-MLX%20Whisper-0e0e11?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-224%20passing-22c55e?style=flat-square)
-![Local first](https://img.shields.io/badge/data-never%20leaves%20your%20Mac-ffffff?style=flat-square&labelColor=0e0e11)
+![Tests](https://img.shields.io/badge/tests-257%20passing-22c55e?style=flat-square)
+![Local first](https://img.shields.io/badge/data-local%20first-ffffff?style=flat-square&labelColor=0e0e11)
 
-[Watch the 25-second video](docs/media/prag-brag.mp4) · [How it works](#how-it-works) · [Run it](#run-it) · [The study](#the-study)
+[Watch the 25-second video](docs/media/prag-brag.mp4) · [How it works](#how-it-works) · [Run it](#run-it) · [The study](#the-study) · [The Gradient](#the-gradient-per-persona-models-chat-and-debate)
 
 </div>
 
@@ -65,6 +65,47 @@ flowchart LR
 
 <p align="center"><img src="docs/media/panel-topics.png" alt="Topics the algorithm serves" width="900"></p>
 
+## The Gradient: per-persona models, chat and debate
+
+The ML half of PRAG: models that learn from what each persona's feed served it, and nothing else. How it's trained,
+and why this way rather than another, is in [docs/TRAINING.md](docs/TRAINING.md). Every measured number is in
+[docs/results/gradient.md](docs/results/gradient.md), written by `python -m gradient.report`.
+
+- **Two personas.** @mlproject01 is a right-leaning civil engineer in Indore: national security, infrastructure and
+  government schemes, plus cricket, gadgets, Hindi comedy and street food. @mlproject02 is a left-leaning teacher in
+  Pune: labour, public services, civil liberties and the environment, plus football, indie music, photography and
+  gaming. Each persona has a readable description and a structured profile (topic weights, stance and language
+  preferences), both editable in the Persona tab.
+- **The training corpus.** About 24,000 unique items in English, Hindi and Hinglish. They are the reels the Instagram
+  sessions recorded, about 15,300 reels written for each feed by an LLM following the persona's profile (2,400 of them
+  about the latest real news stories, picked for each persona by its own preference model), news headlines and
+  Wikipedia. Every item records where it came from. Jev judges every item for both personas, and each persona
+  has its own reaction, in its own words, to every reel in its feed.
+- **Preference models, one per persona.** A majority baseline, the quick rules, TF-IDF + logistic regression and
+  multilingual embeddings + logistic regression, all on the same story-grouped splits. The best model and its
+  threshold are chosen on validation and scored once on a frozen test set. Test PR-AUC is about 0.92 for each
+  persona, against about 0.6 for the hand-written rules, and 0.70 / 0.90 on the 59 real Instagram reels
+  in each test set (a small, noisy slice).
+- **Persona language models.** A LoRA adapter per persona on Qwen3 4B (4-bit, MLX), trained on its feed, its
+  reactions and answers that cite its reels. It runs entirely on the Mac.
+- **Ask.** *Chat* with a persona, run a *debate* between both on a topic of your choice (with a neutral moderator),
+  ask *one question, two worldviews*, or use the *feed predictor*: paste any reel and see whether each persona would
+  watch it and whose feed it would land in. Answers retrieve only from the persona's own feed, ranked by its
+  preference model, and every citation is checked.
+- **Grows over time.** `python -m gradient update` takes in new session reels, labels them, retrains, and compares
+  every version on the same frozen evaluation set. `--lora` continues each adapter from the last one.
+- **Jev can see covers.** Jev 1.13 and 1.14 accept images (TypeSafe, 14 October 2026). With `JEV_VISION` on, each
+  reel's cover goes to Jev as an inline JPEG through OpenRouter's Decisions API, prepared to Jev's size limits. If
+  the image is rejected, the call is repeated with text only and the reason is recorded.
+
+```bash
+python -m gradient status                       # the corpus, per persona
+python -m gradient update [--lora]              # new data → labels → retrain
+python -m gradient chat --account mlproject02 "What's going on with air pollution?"
+python -m gradient debate --topic "The Agniveer scheme"
+python -m gradient compare "Is the government handling unemployment well?"
+```
+
 ## The control panel
 
 `python launch.py` opens a local panel. It's served to this Mac only, with a per-launch token, and runs in two themes: black and white, or *Brutal*.
@@ -75,6 +116,7 @@ flowchart LR
 - **Feed, Digest, Report:** the study, the daily story digest, and the curation verdict.
 - **Persona:** write each account's persona, or start from a preset you can edit.
 - **Label:** a blind head-to-head. You judge reels as a persona; the scorers' answers stay hidden until you've finished.
+- **Corpus, Training, Ask:** the Gradient: what each feed is made of, every model version with its metrics (and buttons to retrain), and chat, debate, one question two worldviews and the feed predictor.
 - **Schedule, Accounts:** daily runs through launchd, and adding, editing or removing accounts. Passwords stay in a local file only you can read.
 - **Hands off:** while a session runs, the browser window ignores clicks, scrolls and keys that don't come from the agent. Anything that slips through anyway is caught and marked as interrupted, so it never counts as the persona's behaviour.
 
@@ -90,6 +132,7 @@ python launch.py                 # the control panel
 python daily.py --account NAME   # one session, then the digest (what the schedule runs)
 python -m dashboard.feed --all   # every persona's feed, in the terminal
 python -m ml.feed_model --train  # relearn the feed's topics
+python -m gradient update        # grow the corpus and retrain the persona models
 ```
 
 `accounts.json`, `.env`, the database, browser profiles, logs, personas and models are git-ignored. **Use accounts made for PRAG, never your own**: in live runs the agent likes, saves and follows.
@@ -103,6 +146,7 @@ perception/   Whisper, cover OCR, the local LLM judge, categories, Jev (under ev
 stories/      story grouping, news check, the daily digest
 dashboard/    the curation report and the feed study
 ml/           the preference model and the feed model
+gradient/     the Gradient: corpus, reel writer, Jev labels, preference models, LoRA, retrieval, chat, debate, panel tabs
 tools/        follow-first, review, schedule, the Jev / LLM head-to-head
 launch.py     the control panel      daily.py   a guarded daily run      main.py   one session
 ```
@@ -113,8 +157,10 @@ launch.py     the control panel      daily.py   a guarded daily run      main.py
 - [x] The feed model: shared topics, narrowness, drift, what sets each persona apart
 - [x] Accounts, personas and presets, all managed from the panel
 - [x] The input lock: nobody at the Mac can steer a persona by accident
-- [ ] **Faster judging.** A blind head-to-head on a right-leaning persona: Jev (TypeSafe, via OpenRouter) matched the labels on 35 of 39 reels and the local LLM on 34, and Jev answered in 0.37 s against 7.8 s. The plan is for Jev to decide in time while the local LLM keeps writing every reel's topic and summary. It's in the code, switched off (`SCORER` in `config.py`).
-- [ ] **The Gradient.** Weeks of curated persona runs, then models trained on what each persona is fed.
+- [x] **The Gradient.** Per-persona preference models and LoRA persona models, retrained as the corpus grows; chat, debate, two worldviews and the feed predictor
+- [x] **Jev sees cover images** (Jev 1.13 / 1.14 via OpenRouter's Decisions API), behind `JEV_VISION`
+- [ ] **Faster judging.** A blind head-to-head on a right-leaning persona: Jev (TypeSafe, via OpenRouter) matched the labels on 35 of 39 reels and the local LLM on 34, and Jev answered in 0.37 s against 7.8 s. The plan is for Jev to decide in time while the local LLM keeps writing every reel's topic and summary. It's in the code, switched off (`SCORER` in `config.py`); 
+- [ ] **More real feed, more human labels.** Every scheduled session adds to the corpus; blind human reviews in the Label tab measure how well Jev stands in for a person.
 - [ ] **Real or not.** Following "only on Reels" stories over the next days: which reached the news, how early Reels had them, and which never did.
 
 ---

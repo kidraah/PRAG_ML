@@ -72,7 +72,7 @@ class TrainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(train, "MODEL_DIR", tmp):
             path = train.train_and_save("embedding", synthetic(), {"embedding": {}}, embed_fn=fake_embed)
             saved = joblib.load(path)
-        self.assertEqual(os.path.basename(path), "informative-embedding.joblib")
+        self.assertEqual(os.path.basename(path), f"informative-{bias.DEFAULT_FINGERPRINT}-embedding.joblib")
         self.assertEqual((saved["kind"], saved["trained_on"], saved["positives"]), ("embedding", 20, 10))
         self.assertTrue(saved["model"].predict(fake_embed(["news again"]))[0])
 
@@ -125,6 +125,20 @@ class ModelBiasTests(unittest.TestCase):
             joblib.dump({"kind": "tfidf", "model": None, "created": "2026-09-26"}, older)
             self.assertTrue(ModelScorer.available(older, bias=default))
             self.assertFalse(ModelScorer.available(older, bias=tech))
+
+    def test_each_bias_keeps_its_own_file_and_both_kinds_load(self):
+        default, tech = bias.DEFAULT_BIAS, bias.BUILT_IN["tech"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(train, "MODEL_DIR", tmp), \
+                mock.patch("ml.scorer.MODEL_DIR", tmp), mock.patch("stories.grouping.embed", fake_embed):
+            mine = train.train_and_save("embedding", synthetic(), {}, embed_fn=fake_embed)
+            theirs = train.train_and_save("tfidf", synthetic(), {}, bias=tech.fingerprint)
+            self.assertNotEqual(mine, theirs)  # training the tech bias didn't overwrite the default's model
+            from ml import scorer as scorer_module
+            self.assertEqual(scorer_module.path_for(default), mine)
+            self.assertEqual(scorer_module.path_for(tech), theirs)
+            self.assertTrue(ModelScorer.available(bias=default) and ModelScorer.available(bias=tech))
+            self.assertEqual((ModelScorer(bias=default).kind, ModelScorer(bias=tech).kind), ("embedding", "tfidf"))
+            self.assertFalse(ModelScorer.available(bias=bias.BUILT_IN["investor"]))
 
     def test_which_bias_a_scorers_labels_came_from(self):
         tech = bias.BUILT_IN["tech"]

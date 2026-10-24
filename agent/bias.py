@@ -15,6 +15,9 @@ behaves like on one account:
                  the end and engage (true for every persona the panel saves);
                  false only for the default below, which scores how
                  informative a reel is
+  profile        optional structured settings for the Gradient (topic
+                 weights, stance and language preferences, secondary
+                 interests, exploration): see gradient/personas.py
 
 Each account's persona is biases/<account>.json (the panel's Persona tab
 edits it). An account without one scrolls with the News (India) default,
@@ -54,6 +57,7 @@ class Bias:
     creator_hints: list[str] = field(default_factory=list)
     seeds: list[str] = field(default_factory=list)
     persona: bool = False
+    profile: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.interests = self.interests.strip()  # the prompt strips it too, so fingerprints don't change
@@ -102,7 +106,47 @@ def validated(data: dict) -> Bias:
         raise ValueError(f"\"{bad}\" isn't an Instagram handle.")
     if len(seeds) > MAX_SEEDS:
         raise ValueError(f"At most {MAX_SEEDS} accounts to follow.")
-    return Bias(name=name, interests=interests, seeds=seeds, persona=bool(data.get("persona")), **lists)
+    return Bias(name=name, interests=interests, seeds=seeds, persona=bool(data.get("persona")),
+                profile=validated_profile(data.get("profile")), **lists)
+
+
+PROFILE_WEIGHTS = ("topic_weights", "stance", "languages", "kinds")
+
+
+def validated_profile(profile) -> dict:
+    """The structured profile, or ValueError: weights are numbers from 0 to 1, keyed by short names."""
+    if not profile:
+        return {}
+    if not isinstance(profile, dict):
+        raise ValueError("The structured profile must be an object.")
+    out: dict = {"schema": 1}
+    for key in PROFILE_WEIGHTS:
+        weights = profile.get(key) or {}
+        if not isinstance(weights, dict) or len(weights) > 80:
+            raise ValueError(f"Profile {key}: expected up to 80 named weights.")
+        clean = {}
+        for name, value in weights.items():
+            if not re.fullmatch(r"[a-z_]{1,32}", str(name)):
+                raise ValueError(f"Profile {key}: \"{str(name)[:20]}\" isn't a valid name.")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"Profile {key}.{name}: expected a number.") from None
+            if not 0 <= number <= 1:
+                raise ValueError(f"Profile {key}.{name}: keep it between 0 and 1.")
+            clean[name] = round(number, 3)
+        out[key] = clean
+    out["secondary_interests"] = words(profile.get("secondary_interests"))[:30]
+    exploration = profile.get("exploration") or {}
+    try:
+        out["exploration"] = {"epsilon": min(0.5, max(0.0, float(exploration.get("epsilon", 0.1)))),
+                              "start_temperature": min(2.0, max(0.05, float(exploration.get("start_temperature", 1.0)))),
+                              "end_temperature": min(2.0, max(0.05, float(exploration.get("end_temperature", 0.3))))}
+        out["noise"] = min(0.3, max(0.0, float(profile.get("noise", 0.08))))
+    except (TypeError, ValueError):
+        raise ValueError("Profile exploration and noise must be numbers.") from None
+    out["summary"] = " ".join(str(profile.get("summary") or "").split())[:600]
+    return out
 
 
 # ── The default, and the persona presets ─────────────────────────────
@@ -385,9 +429,15 @@ def has_own(account: str) -> bool:
 
 
 def save(account: str, bias: Bias) -> str:
+    """Write the account's persona, and append it to biases/history/<account>.jsonl (every version is kept)."""
     path = path_for(account)
-    os.makedirs(BIAS_DIR, exist_ok=True)
+    os.makedirs(os.path.join(BIAS_DIR, "history"), exist_ok=True)
     with open(path + ".tmp", "w") as fh:
         json.dump(bias.to_dict(), fh, ensure_ascii=False, indent=1)
     os.replace(path + ".tmp", path)
+    import datetime
+
+    with open(os.path.join(BIAS_DIR, "history", f"{account}.jsonl"), "a") as fh:
+        fh.write(json.dumps({"saved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                             "fingerprint": bias.fingerprint, **bias.to_dict()}, ensure_ascii=False) + "\n")
     return path

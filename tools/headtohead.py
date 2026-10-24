@@ -11,7 +11,12 @@ you more (the watch / skip call at WATCH_THRESHOLD), Hindi reels included.
 The sample stays fixed once picked, so labels stay valid; running again
 only fills in missing scores (--new picks a new sample, dropping labels).
 
-    python -m tools.headtohead [--personas news-follower,right-leaning,left-leaning] [--reels 40] [--new]
+    python -m tools.headtohead [--personas news-follower,right-leaning,left-leaning] [--reels 40] [--new] [--vision]
+
+--vision also scores each reel with Jev shown its cover image ("jev_vision"),
+from the covers sessions keep (perception/jev_image.save_cover); a reel
+without one is scored text only and the reason recorded, never skipped or
+counted as zero.
 """
 
 import argparse
@@ -30,7 +35,7 @@ from dotenv import load_dotenv
 from agent import bias as biases
 from config import WATCH_THRESHOLD
 from database.db import get_connection
-from perception import jev
+from perception import jev, jev_image
 from perception.local_evaluator import ScoringError, build_user_message, evaluate_value_async, llm_serving
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,7 +93,7 @@ def pick_sample(conn: sqlite3.Connection, size: int = 40, seed: int = 7) -> list
 
 # ── Scoring ───────────────────────────────────────────────────────────
 
-async def _score_all(run: dict, progress=print) -> None:
+async def _score_all(run: dict, progress=print, vision: bool = False) -> None:
     llm_gate, jev_gate = asyncio.Semaphore(2), asyncio.Semaphore(6)
     scores = run.setdefault("scores", {})
     async with aiohttp.ClientSession() as session:
@@ -103,6 +108,12 @@ async def _score_all(run: dict, progress=print) -> None:
                     async with jev_gate:
                         result = await jev.score_async(session, reel["text"], interests)
                     slot["jev"] = {"score": result.value_score, "seconds": result.seconds, "cost": result.cost}
+                elif model == "jev_vision":
+                    async with jev_gate:
+                        result = await jev.score_async(session, reel["text"], interests,
+                                                       cover=jev_image.load_cover(reel["code"]), vision=True)
+                    slot["jev_vision"] = {"score": result.value_score, "seconds": result.seconds, "cost": result.cost,
+                                          "image_used": result.image_used, "fallback": result.fallback}
                 else:
                     async with llm_gate:
                         meta = SimpleNamespace(creator=reel["creator"], creator_full_name="", creator_verified=False,
@@ -119,7 +130,7 @@ async def _score_all(run: dict, progress=print) -> None:
                 run.setdefault("errors", []).append(f"{model} {persona} {reel['code']}: {exc}")
 
         tasks = [one(model, persona, reel) for persona in run["personas"] for reel in run["reels"]
-                 for model in ("jev", "llm")]
+                 for model in ("jev", "llm") + (("jev_vision",) if vision else ())]
         done = 0
         for task in asyncio.as_completed(tasks):
             await task
@@ -189,12 +200,14 @@ def agreement(pairs: list[tuple[bool, bool]]) -> dict:
 def results(run: dict, labels: dict) -> dict:
     """Per persona and overall: how often each model's watch / skip call matches yours."""
     reels = {r["code"]: r for r in run["reels"]}
-    out, pooled = {}, {"jev": [], "llm": [], "jev_hindi": [], "llm_hindi": []}
+    models = ("jev", "llm") + (("jev_vision",) if any("jev_vision" in s for p in run.get("scores", {}).values()
+                                                       for s in p.values()) else ())
+    out, pooled = {}, {f"{m}{h}": [] for m in models for h in ("", "_hindi")}
     for persona in run["personas"]:
         mine = {c: l for c, l in labels.get(persona, {}).items() if l in ("watch", "skip") and c in reels}
         scores = run.get("scores", {}).get(persona, {})
         entry = {"labelled": len(mine), "of": len(reels), "misses": []}
-        for model in ("jev", "llm"):
+        for model in models:
             pairs = [(mine[c] == "watch", scores[c][model]["score"] >= WATCH_THRESHOLD)
                      for c in mine if model in scores.get(c, {})]
             hindi = [(mine[c] == "watch", scores[c][model]["score"] >= WATCH_THRESHOLD)
@@ -211,13 +224,15 @@ def results(run: dict, labels: dict) -> dict:
                                             "creator": reels[code]["creator"]})
         out[persona] = entry
     timing = {m: [s[m]["seconds"] for p in run.get("scores", {}).values() for s in p.values() if m in s]
-              for m in ("jev", "llm")}
+              for m in models}
     return {
         "personas": out,
-        "overall": {m: {**agreement(pooled[m]), "hindi": agreement(pooled[m + "_hindi"])} for m in ("jev", "llm")},
+        "overall": {m: {**agreement(pooled[m]), "hindi": agreement(pooled[m + "_hindi"])} for m in models},
         "seconds": {m: sorted(t)[len(t) // 2] if t else None for m, t in timing.items()},
-        "jev_cost": round(sum(s["jev"].get("cost", 0) for p in run.get("scores", {}).values() for s in p.values()
-                              if "jev" in s), 5),
+        "jev_cost": round(sum(s[m].get("cost", 0) for p in run.get("scores", {}).values() for s in p.values()
+                              for m in ("jev", "jev_vision") if m in s), 5),
+        "images_used": sum(bool(s["jev_vision"].get("image_used")) for p in run.get("scores", {}).values()
+                           for s in p.values() if "jev_vision" in s),
         "scored": {m: len(t) for m, t in timing.items()},
     }
 
@@ -227,6 +242,7 @@ def main() -> None:
     parser.add_argument("--personas", default=",".join(DEFAULT_PERSONAS), help="Preset keys, comma-separated")
     parser.add_argument("--reels", type=int, default=40)
     parser.add_argument("--new", action="store_true", help="Pick a new sample (your labels are dropped)")
+    parser.add_argument("--vision", action="store_true", help="Also score with Jev shown each reel's cover image")
     args = parser.parse_args()
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
     if not jev.api_key():
@@ -255,7 +271,7 @@ def main() -> None:
     run["errors"] = []
     save_run(run)
     print(f"⚖️  Scoring {len(run['reels'])} reels as {len(run['personas'])} personas with Jev and the local LLM …")
-    asyncio.run(_score_all(run))
+    asyncio.run(_score_all(run, vision=args.vision))
     save_run(run)
     if run["errors"]:
         print(f"⚠️  {len(run['errors'])} calls failed (run again to retry them), e.g. {run['errors'][0]}")

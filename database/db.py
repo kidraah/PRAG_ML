@@ -29,7 +29,7 @@ IMPRESSION_COLUMNS = (
     "reasoning", "error", "gate_keyword", "gate_audit", "score_seconds", "scored_at",
     "decision", "decision_basis", "explored", "dwell_seconds", "planned",
     "liked", "saved", "followed", "rule_score", "rule_reason", "ready_on_arrival",
-    "stance", "claim_kind", "source_type", "tone", "llm_score",
+    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used",
 )
 # Columns added after the first release; init_db adds them to older databases.
 LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arrival", "INTEGER"),
@@ -37,12 +37,13 @@ LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arr
                  # Jev's study labels (perception/jev.py STUDY_LABELS), the same whatever the persona
                  ("stance", "TEXT"), ("claim_kind", "TEXT"), ("source_type", "TEXT"), ("tone", "TEXT"),
                  # when Jev scores a reel, the local LLM's own score of it, written with the topic and summary
-                 ("llm_score", "REAL"))
+                 ("llm_score", "REAL"),
+                 ("image_used", "INTEGER"))  # Jev with vision on: 1 when the cover image was in the request
 SCORE_COLUMNS = (
     "transcript", "transcript_language", "cover_text", "score_basis",
     "value_score", "is_informational", "topic", "summary", "reasoning",
     "error", "gate_keyword", "gate_audit", "score_seconds",
-    "stance", "claim_kind", "source_type", "tone", "llm_score",
+    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used",
 )
 
 

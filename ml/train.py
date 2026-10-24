@@ -114,7 +114,7 @@ def train_and_save(kind: str, examples: list[Example], report: dict, embed_fn=No
     y = np.array([e.informative for e in examples])
     model = make_model(kind).fit(features(kind, examples, embed_fn), y)
     os.makedirs(MODEL_DIR, exist_ok=True)
-    path = os.path.join(MODEL_DIR, f"informative-{kind}.joblib")
+    path = os.path.join(MODEL_DIR, f"informative-{bias}-{kind}.joblib")  # one file per bias: never another's
     joblib.dump({
         "kind": kind, "model": model, "embedding_model": EMBEDDING_MODEL if kind == "embedding" else None,
         "threshold": 0.5, "trained_on": len(examples), "positives": int(y.sum()),

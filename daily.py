@@ -164,6 +164,26 @@ def update_feed_model() -> None:
         conn.close()
 
 
+def update_gradient() -> None:
+    """Add the session's new reels to the Gradient's corpus (their account's feed) and have Jev judge them for both
+    personas; retraining stays a deliberate step (the panel's Training tab, or `python -m gradient update`)."""
+    import asyncio
+
+    from gradient import ingest, label, store
+
+    conn = store.connect()
+    try:
+        new = ingest.ingest_sessions(conn)
+        if any(new.values()):
+            for account in store.ACCOUNTS:
+                asyncio.run(label.label_account(conn, account, progress=lambda message: None))
+            print(f"\n🧬  Gradient: +{sum(new.values())} reels in the corpus. Retrain from the panel's Training tab.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n⚠️  Couldn't update the Gradient's corpus: {exc}")
+    finally:
+        conn.close()
+
+
 # ── Output ────────────────────────────────────────────────────────────
 
 class Tee:
@@ -250,6 +270,7 @@ def daily(args: argparse.Namespace, account: str) -> int:
 
     categorize_new(account)
     update_feed_model()
+    update_gradient()
     print(f"\n📰  Building the digest for the last {DIGEST_HOURS} h (checking stories against the news) …")
     conn = get_connection()
     try:

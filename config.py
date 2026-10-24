@@ -20,6 +20,29 @@ LLM_THINKING = False                   # False: reasoning models (Qwen3.5, ...) 
 SCORER = "llm"
 SCORING_WORKERS = 2                    # reels scored at once; LM Studio must allow this many parallel predictions
 
+# Jev (TypeSafe, served by OpenRouter; perception/jev.py). Hosted: the persona and the reel's text (and, with vision
+# on, its cover image) leave this Mac. Two OpenRouter transports, not interchangeable:
+#   "systemone"  /api/v1/systemone, TypeSafe-SDK-compatible, text state (what the head-to-head measured)
+#   "decisions"  /api/alpha/decisions, state as an array; images go in it as inline base64 image_url parts
+#                (OpenRouter ignores TypeSafe's native `assets` map and never fetches remote image URLs)
+JEV_ENDPOINT = "systemone"
+JEV_URLS = {"systemone": "https://openrouter.ai/api/v1/systemone",
+            "decisions": "https://openrouter.ai/api/alpha/decisions"}
+JEV_MODEL = "typesafe/jev-1.13"        # pinned; "typesafe/jev-1.14" also accepts images (experimental per TypeSafe)
+JEV_VISION = False                     # True: send each reel's cover image too (always via "decisions")
+JEV_IMAGE_MAX_SIDE = 768               # covers are scaled to fit (OpenRouter: 256-1568 px a side; TypeSafe: 280-1568)
+JEV_IMAGE_MIN_SIDE = 280               # smaller covers are upscaled to this, or sent as text only when tiny
+JEV_IMAGE_JPEG_QUALITY = 85
+JEV_IMAGE_CACHE_MB = 200               # prepared covers kept on disk (datasets/jev-images), oldest dropped first
+JEV_TIMEOUT = 15.0                     # seconds per Jev call (image calls get twice this)
+JEV_MAX_SPEND_USD = 2.00               # a Gradient teacher run stops before spending more than this
+
+# The Gradient's reel writer (gradient/generate.py): "openrouter" (GEN_MODEL, OPENROUTER_API_KEY; the briefs and
+# persona descriptions leave this Mac) or "local" (the LM Studio model above, ~13 reels a minute on this Mac)
+GEN_BACKEND = "openrouter"
+GEN_MODEL = "qwen/qwen3.5-flash-02-23"
+GEN_MAX_SPEND_USD = 1.50               # per run, per account
+
 
 # ── What counts as valuable ───────────────────────────────────────────
 

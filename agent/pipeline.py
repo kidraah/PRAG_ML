@@ -35,8 +35,8 @@ import aiohttp
 from agent import bias as bias_module
 from agent.creators import CreatorMemory
 from automation.feed_capture import FeedCatalog, ReelMeta
-from config import EXPLORATION_RATE, SCORING_WORKERS, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
-from perception import jev, ocr, transcriber
+from config import EXPLORATION_RATE, JEV_VISION, SCORING_WORKERS, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
+from perception import jev, jev_image, ocr, transcriber
 from perception.heuristics import keyword_gate
 from perception.local_evaluator import ScoringError, build_user_message, evaluate_value_async, llm_serving
 from perception.writer import text_fields
@@ -61,6 +61,7 @@ class ScoreResult:
     seconds: float = 0.0
     labels: dict | None = None          # Jev's study labels: stance, claim_kind, source_type, tone
     llm_score: float | None = None      # Jev-judged reels: the local LLM's own score, written with the text
+    image_used: bool | None = None      # Jev with vision on: whether the cover image was in the request
 
     def score_fields(self) -> dict:
         """Columns for the impressions table."""
@@ -80,6 +81,7 @@ class ScoreResult:
             "score_seconds": round(self.seconds, 2),
             **{key: value for key, value in (self.labels or {}).items() if value},
             **({"llm_score": self.llm_score} if self.llm_score is not None else {}),
+            **({"image_used": int(self.image_used)} if self.image_used is not None else {}),
         }
 
 
@@ -110,6 +112,8 @@ class ScoringPipeline:
         self._user_agent = user_agent
         self.scorer = scorer  # "jev" or "llm": who judges reels (fixed for the session)
         self.on_text = on_text  # Jev-judged reels: called when the LLM has written their text
+        self.vision = scorer == "jev" and JEV_VISION  # Jev also sees each reel's cover image
+        self._covers: dict[str, bytes] = {}  # cover bytes kept from OCR for Jev, until the reel is scored
         self.writing = False  # set by warm_up: the LLM is serving, so it writes as the session goes
         self._to_write: list[tuple[ReelMeta, ScoreResult]] = []
         self._write_wake = asyncio.Event()
@@ -300,14 +304,19 @@ class ScoringPipeline:
     async def _jev_score(self, meta, transcript, language, cover_text, problems, base, started) -> ScoreResult:
         """Jev's judgement and study labels; the reel then waits for the LLM to write its text."""
         text = build_user_message(meta, transcript, language, cover_text, datetime.date.today())
+        cover = self._covers.pop(meta.code, None)
         try:
-            judgement = await jev.judge_async(self._llm, text, self.bias.interests, persona=self.bias.persona)
+            judgement = await jev.judge_async(self._llm, text, self.bias.interests, persona=self.bias.persona,
+                                              cover=cover, vision=self.vision)
         except jev.JevError as exc:
             problems.append(str(exc))
             return ScoreResult(meta.code, basis="llm_error", error="; ".join(problems),
                                seconds=time.monotonic() - started, **base)
+        if judgement.fallback:
+            problems.append(f"Jev scored text only ({judgement.fallback})")
         result = ScoreResult(meta.code, basis="score", value_score=judgement.value_score, labels=judgement.labels,
-                             error="; ".join(problems) or None, seconds=time.monotonic() - started, **base)
+                             error="; ".join(problems) or None, seconds=time.monotonic() - started,
+                             image_used=judgement.image_used if self.vision else None, **base)
         if self.writing:
             self._to_write.append((meta, result))
             self._write_wake.set()
@@ -372,14 +381,21 @@ class ScoringPipeline:
                 _remove(path)
 
         async def cover() -> str:
-            if not (USE_COVER_OCR and meta.cover_url):
+            if not ((USE_COVER_OCR or self.vision) and meta.cover_url):
                 return ""
             path = os.path.join(self._tmp.name, f"{meta.code}.jpg")
             try:
-                await download(self._media, meta.cover_url, path)
+                await download(self._media, meta.cover_url, path)  # once: OCR reads it, and Jev gets its bytes
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                jev_image.save_cover(meta.code, data)  # kept (bounded) for re-scoring later without a download
+                if self.vision:
+                    self._covers[meta.code] = data
+                if not USE_COVER_OCR:
+                    return ""
                 return await loop.run_in_executor(self._ocr, ocr.extract_text_from_frame, path)
             except Exception as exc:  # noqa: BLE001
-                problems.append(f"cover OCR: {exc}")
+                problems.append(f"cover {'OCR' if USE_COVER_OCR else 'download'}: {exc}")
                 return ""
             finally:
                 _remove(path)

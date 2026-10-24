@@ -279,6 +279,36 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/h2h/run", {})[0], 200)
         self.assertEqual(launch.Panel.runner._launch.call_args.args[0][1:], ["-m", "tools.headtohead"])
 
+    def test_gradient_endpoints(self):
+        from gradient import api as gradient_api, store
+
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(store, "DB_PATH", os.path.join(tmp, "corpus.db")))
+        self.enterContext(mock.patch.object(store, "MODEL_DIR", os.path.join(tmp, "models")))
+        conn = store.connect()
+        batch = store.new_batch(conn, "generated", "reels written for the feed")
+        item, _ = store.add_item(conn, {"origin": "generated", "caption": "Naya expressway", "topic": "infrastructure",
+                                        "stance": "supportive", "language": "hinglish"}, batch)
+        store.add_to_feed(conn, "mlproject01", item, batch, "generator")
+        conn.commit()
+        conn.close()
+        data = json.loads(self.request("GET", "/api/gradient/overview")[2])
+        self.assertEqual((data["items"], data["origins"][0]["name"]), (1, "Written by an LLM (Qwen 3.5) for the feed"))
+        mine = next(p for p in data["personas"] if p["account"] == "mlproject01")
+        self.assertEqual((mine["feed_total"], mine["topics"][0]["topic"]), (1, "infrastructure"))
+        feed = json.loads(self.request("GET", "/api/gradient/items?account=mlproject01")[2])
+        self.assertEqual(feed["items"][0]["text"], "Naya expressway")
+        for method, path, body in (("GET", "/api/gradient/items?account=someone_else", None),
+                                   ("POST", "/api/gradient/talk/start", {"kind": "chat", "account": "mlproject01", "text": " "}),
+                                   ("POST", "/api/gradient/predict", {"text": "hi"}),
+                                   ("POST", "/api/gradient/train", {"what": "rm -rf"})):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(method, path, body)[0], 400)
+        self.assertEqual(self.request("GET", "/api/gradient/overview", token=False)[0], 403)
+        with mock.patch.object(gradient_api.retrieval, "search", return_value={"items": [], "model": None, "enough": False}):
+            predicted = json.loads(self.request("POST", "/api/gradient/predict", {"text": "A long enough reel text"})[2])
+        self.assertEqual((predicted["personas"][0]["p"], predicted["feed"]), (None, None))  # no model yet: says so
+
     def test_train_the_feed_model(self):
         launch.Panel.runner._launch.return_value = {"key": "m"}
         self.assertEqual(self.request("POST", "/api/feed/model", {})[0], 200)

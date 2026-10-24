@@ -9,6 +9,10 @@ sentence-transformers
 scikit-learn
 numpy
 joblib
+# the Gradient: persona language models (LoRA on MLX), cover images for Jev
+mlx-lm
+huggingface_hub
+pillow
 
 # Also needed:
 #   ffmpeg        brew install ffmpeg   (mlx-whisper decodes audio with it)

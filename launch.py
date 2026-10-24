@@ -39,12 +39,14 @@ from dashboard import feed as feed_study
 from ml import feed_model
 from tools import headtohead
 from database import accounts as account_store
-from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, MIN_BATTERY, SESSION_MINUTES
+from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, LLM_MODEL_NAME, MIN_BATTERY, SESSION_MINUTES
 from database.db import engaged_today, get_connection, init_db, list_accounts, minutes_today
 from ml.scorer import ModelScorer
 from perception.local_evaluator import llm_serving
 from stories.digest import DIGEST_DIR
 from tools import schedule
+from gradient import api as gradient_api
+from gradient import panel as gradient_panel
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))  # OPENROUTER_API_KEY, for the Jev head-to-head
@@ -138,7 +140,7 @@ def digest_data(account: str, date: str | None) -> dict:
 
 def bias_info(account: str) -> dict:
     current, presets = biases.load(account), biases.presets()
-    trained = ModelScorer.trained_for()
+    trained = ModelScorer.trained_for(bias=current)
     model_bias = next((b for b in [current, biases.DEFAULT_BIAS, *presets.values(), *biases.BUILT_IN.values()]
                        if b.fingerprint == trained), None)
     return {
@@ -343,8 +345,8 @@ class Panel(BaseHTTPRequestHandler):
             return self._feed_export(query)
         self._handle({"/api/state": self.state, "/api/output": self.output, "/api/digest": self.digest,
                       "/api/report": self.report, "/api/schedules": self.schedules, "/api/bias": self.bias,
-                      "/api/feed": self.feed, "/api/accounts": self.account_list, "/api/h2h": self.h2h},
-                     url.path, query)
+                      "/api/feed": self.feed, "/api/accounts": self.account_list, "/api/h2h": self.h2h,
+                      **gradient_api.GET}, url.path, query)
 
     def do_POST(self) -> None:  # noqa: N802
         url = urlparse(self.path)
@@ -366,7 +368,7 @@ class Panel(BaseHTTPRequestHandler):
                       "/api/presets/restore": self.restore_presets,
                       "/api/h2h/label": self.h2h_label, "/api/h2h/run": self.h2h_run,
                       "/api/schedule/install": self.install_schedule,
-                      "/api/schedule/remove": self.remove_schedule}, url.path, body)
+                      "/api/schedule/remove": self.remove_schedule, **gradient_api.POST}, url.path, body)
 
     def _digest_file(self, path: str) -> None:
         parts = path.split("/")  # "", "digest", account, file
@@ -464,7 +466,8 @@ class Panel(BaseHTTPRequestHandler):
 
     def save_bias(self, body: dict) -> dict:
         account = checked_account(body.get("account"))
-        biases.save(account, biases.validated({**body, "persona": True}))
+        profile = body["profile"] if "profile" in body else biases.load(account).profile  # the form doesn't edit it
+        biases.save(account, biases.validated({**body, "persona": True, "profile": profile}))
         return bias_info(account)
 
     @staticmethod
@@ -593,8 +596,8 @@ def page() -> str:
     script_json = lambda value: json.dumps(value).replace("<", "\\u003c")
     defaults = {"engagement": DAILY_ENGAGEMENT, "minutes": SESSION_MINUTES, "cap": DAILY_MAX_MINUTES,
                 "min_battery": MIN_BATTERY}
-    return (PAGE.replace("__TOKEN__", script_json(TOKEN)).replace("__MODES__", script_json(ENGAGEMENT_MODES))
-            .replace("__DEFAULTS__", script_json(defaults)))
+    return gradient_panel.inject(PAGE.replace("__TOKEN__", script_json(TOKEN)).replace("__MODES__", script_json(ENGAGEMENT_MODES))
+                                 .replace("__DEFAULTS__", script_json(defaults)), LLM_MODEL_NAME)
 
 
 PAGE = r"""<!doctype html>
@@ -1004,6 +1007,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .track.indeterminate i { width: 100%; opacity: .45; }
 }
+/*GRADIENT_CSS*/
 </style>
 </head>
 <body>
@@ -1023,6 +1027,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <button class="nav-btn" data-tab="report" title="Report"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span class="btn-text">Report</span></button>
         <button class="nav-btn" data-tab="bias" title="Persona"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.75a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zm6 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/></svg><span class="btn-text">Persona</span></button>
         <button class="nav-btn" data-tab="label" title="Label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM10 17H5v-2h5v2zm0-4H5v-2h5v2zm0-4H5V7h5v2zm4.82 6L12 12.16l1.41-1.41 1.41 1.42L17.99 9l1.42 1.42L14.82 15z"/></svg><span class="btn-text">Label</span></button>
+        <!--GRADIENT_NAV-->
         <button class="nav-btn" data-tab="schedule" title="Schedule"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span class="btn-text">Schedule</span></button>
         <button class="nav-btn" data-tab="accounts" title="Accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg><span class="btn-text">Accounts</span></button>
       </nav>
@@ -1044,6 +1049,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <select id="account" aria-label="Account"></select>
         <button class="text-btn" id="bias-pill" title="Edit the persona" hidden></button>
       </div>
+<!--GRADIENT_ISLAND-->
       <div class="island">
         <span class="island-label">System</span>
         <span class="chip" id="chip-llm" hidden></span>
@@ -1236,6 +1242,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
           <div class="actions"><button class="btn primary" id="btn-bias-save">Save persona</button></div>
           <p class="hint" id="bias-note"></p>
         </div>
+<!--GRADIENT_PROFILE-->
       </section>
 
       <section id="tab-label" hidden>
@@ -1271,6 +1278,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         </div>
       </section>
 
+<!--GRADIENT_SECTIONS-->
       <section id="tab-schedule" hidden>
         <div class="two">
           <div class="card">
@@ -2420,6 +2428,7 @@ function showTab(name) {
   if (name === "feed") loadFeed();
   if (name === "accounts") loadAccounts();
   if (name === "label") loadH2H();
+  gradientShow(name);
 }
 
 // ── The look: two themes, the collapsible rail, and the contour field behind it ──
@@ -2690,6 +2699,7 @@ function init() {
   setInterval(pollOutput, 1000);
 }
 document.addEventListener("DOMContentLoaded", init);
+//GRADIENT_JS
 </script>
 </body>
 </html>

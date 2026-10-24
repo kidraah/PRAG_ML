@@ -330,7 +330,7 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
     # With the LLM off, --rules scores the recordings with the trained model when there is one;
     # otherwise (and always with --observe) they wait for review.
     bias = load_bias(username)  # what this account looks for (the panel's Bias tab)
-    fallback = ModelScorer() if rules and ModelScorer.available(bias=bias) else None
+    fallback = ModelScorer(bias=bias) if rules and ModelScorer.available(bias=bias) else None
 
     # Who judges reels. Jev (config.SCORER): the session only runs when Jev answers, so an account's persona is
     # always judged the same way; the local LLM writes the text as far as it can. Otherwise the LLM does both.
@@ -408,7 +408,7 @@ async def _session(args: argparse.Namespace, username: str) -> dict:
         try:
             await pipeline.warm_up()
         except ScoringError as exc:
-            print(f"❌  LLM warm-up failed: {exc}")
+            print(f"❌  {'Jev and writer' if use_jev else 'LLM'} warm-up failed: {exc}")
             outcome.update(status="llm_unavailable", detail=str(exc))
             return outcome
         print(f"  🔥  Ready in {time.monotonic() - warm_start:.0f}s")
