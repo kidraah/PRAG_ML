@@ -169,6 +169,37 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status, 403)
         launch.Panel.runner.start.assert_not_called()
 
+    def test_presentation_mode_refuses_collection_but_keeps_the_rest(self):
+        self.enterContext(mock.patch.object(launch, "PRESENTATION", True))
+        for path, body in (("/api/run", {"account": "acct"}), ("/api/seed", {"account": "acct", "handles": ["x"]}),
+                           ("/api/schedule/install", {"account": "acct"}), ("/api/accounts/add", {"username": "x"})):
+            with self.subTest(path=path):
+                status, _, data = self.request("POST", path, body)
+                self.assertEqual((status, json.loads(data)["error"]), (403, launch.BLOCKED))
+        launch.Panel.runner.start.assert_not_called()
+        launch.Panel.runner.start_seed.assert_not_called()
+        state = json.loads(self.request("GET", "/api/state?account=acct")[2])
+        self.assertTrue(state["presentation"])
+        self.assertEqual(self.request("GET", "/", token=False)[0], 200)
+
+    def test_the_remote_collector_is_only_what_a_real_check_says(self):
+        from urllib.error import URLError
+
+        launch._cache.pop("collector", None)
+        self.enterContext(mock.patch.object(launch, "COLLECTOR_URL", ""))
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["collector"], {"configured": False})
+        self.enterContext(mock.patch.object(launch, "COLLECTOR_URL", "http://100.64.0.9:8080/health"))
+        with mock.patch("urllib.request.urlopen", side_effect=URLError("timed out")):
+            down = json.loads(self.request("GET", "/api/state")[2])["collector"]
+        self.assertEqual((down["configured"], down["reachable"], down["why"]), (True, False, "timed out"))
+        launch._cache.pop("collector", None)
+        answer = mock.MagicMock(status=200)
+        answer.__enter__.return_value = answer
+        with mock.patch("urllib.request.urlopen", return_value=answer):
+            up = json.loads(self.request("GET", "/api/state")[2])["collector"]
+        self.assertEqual((up["reachable"], up["status"]), (True, 200))
+        launch._cache.pop("collector", None)
+
     def test_state(self):
         status, _, body = self.request("GET", "/api/state?account=nobody")
         data = json.loads(body)

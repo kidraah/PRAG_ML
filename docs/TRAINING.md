@@ -162,12 +162,33 @@ python -m gradient update --lora   # …and continue each persona's LoRA adapter
   online learning. It is the simplest correct choice while a full retrain is this cheap.
 - **LoRA adapters are continued, not restarted.** A new version starts from the previous adapter and trains on
   the new batches' examples plus a replay sample of the old (30%). The replay guards against forgetting what
-  earlier batches taught. Each version is a new folder (`lora-vN`), and the panel uses the newest.
+  earlier batches taught. Each version is a new folder (`lora-vN`), and the panel uses the newest unless an
+  older one is made active.
 - **What continuing measured, honestly.** lora-v2 (300 steps on the latest-news reels, session reels and debate
   examples, plus a 30% replay of the old) learned to debate and to talk about this week's stories, but on v1's
   held-out examples its perplexity rose: @mlproject01 from 3.85 to 4.27, @mlproject02 from 3.34 to 4.34. Both are
   still far below the base model's 80 and 131, and still lower on their own persona than on the other's. That's
   partial forgetting. The next version should replay more of the old data, or train new and old together.
+- **lora-v4 (25 October), and why chat still uses v3.** v4 continued v3 on the reels the appended simulated
+  sessions served each persona: about 840 new examples per persona (written answers built around those reels,
+  takes, abstentions) plus a 30% replay of the old, 500 steps for @mlproject01 and 300 for @mlproject02. On v1's
+  held-out examples, which every version is scored on:
+
+  | Adapter | @mlproject01 | @mlproject02 |
+  |---|---|---|
+  | base model | 80.5 | 130.6 |
+  | lora-v1 | 3.85 | 3.34 |
+  | lora-v2 | 4.27 | 4.34 |
+  | lora-v3 | **5.14** | **5.20** |
+  | lora-v4 | 6.57 | 5.75 |
+
+  (v1 and v2 score best here because these examples are in their template style, which v3 was trained away from.)
+  On v3's own written-answer test set, @mlproject01's v4 also scored worse (5.85 against v3's 4.92; its step-200
+  checkpoint 5.50). Validation loss rose while training loss kept falling, most steeply in the second pass over the
+  data: v4 forgot more than it gained. So v3 stays active for both personas (`python -m gradient.lora --account
+  NAME --activate 3`; `--activate 0` goes back to the newest). v4 is kept and shown on the Training tab, and a
+  future continuation starts from the active adapter. A comparison on the new reels' own held-out examples was
+  started but stopped when the Mac ran low on memory, so whether v4 is better on those reels is untested.
 - **After every Instagram session**, `daily.py` adds the session's reels to the corpus and has Jev label them.
   Retraining stays a deliberate step.
 - **If a persona's text changes,** its fingerprint changes, its items are judged again under the new persona, and
@@ -226,6 +247,7 @@ python -m gradient.simulate --append                             # more sessions
 python -m gradient build              # first time: earlier corpus + sessions + labels + headlines + models
 python -m gradient update [--lora]    # every time after: new data → labels → retrain
 python -m gradient.lora --account mlproject01 [--resume]         # train / continue one adapter
+python -m gradient.lora --account mlproject01 --activate 3       # the adapter chat and debate use (0: newest)
 python -m gradient status             # what's in the corpus
 python -m gradient.report             # write docs/results/gradient.md
 python -m gradient chat --account mlproject02 "What's going on with air pollution?"

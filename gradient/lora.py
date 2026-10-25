@@ -31,6 +31,7 @@ version's held-out examples, so versions compare like for like.
 """
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -171,6 +172,37 @@ def latest_adapter(account: str) -> tuple[int, str] | None:
     return max(found) if found else None
 
 
+def active_path(account: str) -> str:
+    return os.path.join(store.MODEL_DIR, account, "active-adapter.json")
+
+
+def active_adapter(account: str) -> tuple[int, str] | None:
+    """The adapter chat and debate use: the version set with set_active (when it still exists), else the newest.
+    A newer version that scored worse can stay trained and on record without answering for the persona."""
+    try:
+        with open(active_path(account)) as fh:
+            version = int(json.load(fh)["version"])
+        path = adapter_dir(account, version)
+        if os.path.exists(os.path.join(path, "adapters.safetensors")):
+            return version, path
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return latest_adapter(account)
+
+
+def set_active(account: str, version: int | None, why: str = "") -> None:
+    """Make lora-v<version> the persona's active adapter; None goes back to always using the newest."""
+    if version is None:
+        if os.path.exists(active_path(account)):
+            os.remove(active_path(account))
+        return
+    if not os.path.exists(os.path.join(adapter_dir(account, version), "adapters.safetensors")):
+        raise ValueError(f"@{account} has no lora-v{version}.")
+    with open(active_path(account), "w") as fh:
+        json.dump({"version": version, "why": why, "set_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+                  fh, indent=1)
+
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 TRAIN_ROW = re.compile(r"^\s*(\d+)\s+([\d.]+)\s*[▼▲=–-]?\s+([\d.]+)\s+[\d.]+k?\s*$")  # iter, loss, tok/s, tokens
 VAL_ROW = re.compile(r"^\s*(\d+)\s+val\s+([\d.]+)")
@@ -200,8 +232,9 @@ def parse_log(text: str) -> dict:
 
 def train(conn, account: str, iters: int = 500, resume: bool = False, progress=print,
           should_stop=lambda: False) -> dict:
-    previous = latest_adapter(account)
-    version = (previous[0] if previous else 0) + 1
+    newest = latest_adapter(account)
+    previous = active_adapter(account)  # a continuation starts from the adapter in use, not a newer one set aside
+    version = (newest[0] if newest else 0) + 1
     out_dir = adapter_dir(account, version)
     data_dir = os.path.join(DATA_DIR, account, f"v{version}")
     batches = None
@@ -266,7 +299,8 @@ def train(conn, account: str, iters: int = 500, resume: bool = False, progress=p
     report = {"account": account, "version": version, "base_model": BASE_MODEL, "lora": LORA, "iters": iters,
               "examples": counts, "resumed_from": previous[0] if resume and previous else None, "batches": batches,
               "minutes": round((time.monotonic() - started) / 60, 1), **parse_log(log),
-              "eval": evaluate(account, out_dir, data_dir, progress)}
+              "eval": evaluate(account, out_dir, data_dir, progress),
+              "eval_set": "lora-v1 held-out examples" if resume and previous else "its own held-out examples"}
     with open(os.path.join(out_dir, "report.json"), "w") as fh:
         json.dump(report, fh, indent=1)
     run_id = f"{account}-lora-v{version}"
@@ -369,7 +403,15 @@ def main() -> None:
     parser.add_argument("--iters", type=int, default=500)
     parser.add_argument("--resume", action="store_true", help="continue from the latest adapter with what's new")
     parser.add_argument("--rescore", type=int, metavar="N", help="only re-evaluate lora-vN on v1's held-out examples")
+    parser.add_argument("--activate", type=int, metavar="N", help="make lora-vN the adapter chat and debate use "
+                        "(0: always the newest)")
+    parser.add_argument("--why", default="", help="with --activate: the reason, shown on the Training tab")
     args = parser.parse_args()
+    if args.activate is not None:
+        set_active(args.account, args.activate or None, args.why)
+        found = active_adapter(args.account)
+        print(f"@{args.account} now answers with lora-v{found[0]}" if found else f"@{args.account} has no adapter")
+        return
     conn = store.connect()
     if args.rescore:
         write_shared_tests(conn)

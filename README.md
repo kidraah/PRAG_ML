@@ -113,6 +113,7 @@ and why this way rather than another, is in [docs/TRAINING.md](docs/TRAINING.md)
   session log and the Feed tab's reel inspector. One frame per reel, the cover: not the video.
 
 ```bash
+python launch.py --presentation                 # the panel with collection disabled (stored data, local models)
 python -m gradient status                       # the corpus, per persona
 python -m gradient update [--lora]              # new data → labels → retrain
 python -m gradient chat --account mlproject02 "What's going on with air pollution?"

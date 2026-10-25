@@ -55,6 +55,12 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"))  # OPENROUTER_API_KEY, for the J
 RUN_OUTPUT = os.path.join(daily.LOG_DIR, "panel-run.out")  # what the latest run started here printed
 RUN_INFO = os.path.join(daily.LOG_DIR, "panel-run.json")   # which run that was
 TOKEN = secrets.token_urlsafe(24)  # every API call carries it; other websites can't read the page to learn it
+PRESENTATION = False  # python launch.py --presentation: stored data and models only, no collection from this Mac
+BLOCKED = "Collection disabled in presentation mode. Stored sessions and simulated data remain available."
+COLLECTION_ROUTES = {"/api/run", "/api/seed", "/api/prompt", "/api/schedule/install", "/api/schedule/remove",
+                     "/api/accounts/add", "/api/accounts/password", "/api/accounts/delete"}
+# A remote collector (e.g. a home PC that runs the sessions), only when one is configured: its health URL
+COLLECTOR_URL = os.environ.get("PRAG_COLLECTOR_URL", "").strip()
 ALLOWED_HOSTS: set[str] = set()    # 127.0.0.1:<port> and localhost:<port> — refuses DNS-rebinding tricks
 NOISE = re.compile(r"pin_memory|super\(\)\.__init__\(loader\)|HF_TOKEN|HF Hub|Loading weights|resource_tracker|"
                    r"^\s+warnings\.warn\($")
@@ -115,6 +121,27 @@ def feed_rows(account: str | None) -> list[dict]:
         conn.close()
     _cache[key] = (stamp, rows)
     return rows
+
+
+def collector_status() -> dict:
+    """The configured remote collector's state from a real, bounded health check: not configured, reachable
+    (it answered over HTTP) or unreachable."""
+    if not COLLECTOR_URL:
+        return {"configured": False}
+
+    def check() -> dict:
+        from urllib.error import HTTPError, URLError
+        from urllib.request import urlopen
+
+        try:
+            with urlopen(COLLECTOR_URL, timeout=2.5) as res:
+                return {"configured": True, "reachable": True, "status": res.status}
+        except HTTPError as exc:  # it answered, with an error status: up, but not healthy
+            return {"configured": True, "reachable": True, "status": exc.code}
+        except (URLError, OSError, ValueError) as exc:
+            return {"configured": True, "reachable": False, "why": str(getattr(exc, "reason", exc))[:120]}
+
+    return {**cached("collector", 15, check), "url": COLLECTOR_URL}
 
 
 def account_status(account: str) -> dict:
@@ -402,6 +429,8 @@ class Panel(BaseHTTPRequestHandler):
                 raise ValueError
         except ValueError:
             return self._json({"error": "Expected a JSON object"}, 400)
+        if PRESENTATION and url.path in COLLECTION_ROUTES:
+            return self._json({"error": BLOCKED, "presentation": True}, 403)
         self._handle({"/api/run": self.run, "/api/stop": self.stop, "/api/open": self.open_folder,
                       "/api/prompt": self.answer_prompt, "/api/bias": self.save_bias, "/api/seed": self.seed,
                       "/api/feed/categorize": self.categorize, "/api/feed/model": self.train_feed_model,
@@ -436,7 +465,8 @@ class Panel(BaseHTTPRequestHandler):
         account = query.get("account") if query.get("account") in accounts else (accounts[0] if accounts else None)
         info, _ = self.runner.current()
         return {"accounts": accounts, "account": account, "run": info, "prompts": prompt.pending(),
-                "status": account_status(account) if account else None}
+                "status": account_status(account) if account else None, "presentation": PRESENTATION,
+                "collector": collector_status()}
 
     def output(self, query: dict) -> dict:
         info, path = self.runner.current()
@@ -1224,6 +1254,8 @@ body.demo .deck:not(#demo-deck) { display: none; }
         </div>
         <div class="deck card">
           <h3>Next session</h3>
+          <p class="notice" id="presentation-note" hidden></p>
+          <p class="hint" id="collector-line"></p>
           <div class="control">
             <span class="label">Engagement</span>
             <div class="seg" id="engagement"></div>
@@ -1465,6 +1497,7 @@ body.demo .deck:not(#demo-deck) { display: none; }
             <div class="row"><span class="label">Minutes</span><input type="number" id="sch-minutes" min="1" step="1"></div>
             <div class="row"><span class="label">Browser</span><label class="check"><input type="checkbox" id="sch-headless"> Headless: no browser window</label></div>
             <div class="row"><span class="label"></span><label class="check"><input type="checkbox" id="sch-llm"> Start LM Studio if it's off</label></div>
+            <p class="notice" id="schedule-presentation-note" hidden></p>
             <div class="actions"><button class="btn primary" id="btn-schedule">Install schedule</button></div>
             <p class="hint">Runs every day at these times while you're logged in to the Mac, replacing any earlier schedule for this
               account. If the Mac is asleep, the run starts when it wakes; if it's shut down, that run is skipped. A browser window
@@ -1545,7 +1578,9 @@ const store = {
 };
 let state = null, tab = "run", wasRunning = false, shownPrompt = null;
 let SOURCE = store.get("source", "live") === "demo" ? "demo" : "live";
-const igProfile = (handle) => (SOURCE === "demo" ? null : `https://www.instagram.com/${encodeURIComponent(handle)}/`);
+const igProfile = (handle) => (SOURCE === "demo" || (state && state.presentation) ? null
+  : `https://www.instagram.com/${encodeURIComponent(handle)}/`);
+const BLOCKED = "Collection disabled in presentation mode. Stored sessions and simulated data remain available.";
 const out = {key: null, offset: 0, busy: false};
 
 async function api(path, body) {
@@ -1662,12 +1697,20 @@ function renderForm() {
     $("skip").hidden = !s.skip;
     $("skip").textContent = s.skip ? `Won't scroll now: ${s.skip}. Starting only rebuilds the digest.` : "";
   }
-  const running = state.run.running, none = !state.account;
+  const running = state.run.running, none = !state.account, shown = !!state.presentation;
   $("btn-run").textContent = (effectiveMode() === "live" ? "Start a live session" : "Start a dry run") +
     ($("headless").checked ? ", headless" : "");
-  $("btn-run").disabled = running || none;
-  $("btn-digest").disabled = running || none;
+  $("btn-run").disabled = running || none || shown;
+  $("btn-digest").disabled = running || none || shown;
   $("btn-stop").disabled = !running;
+  for (const id of ["presentation-note", "schedule-presentation-note"]) { $(id).hidden = !shown; $(id).textContent = BLOCKED; }
+  for (const id of ["btn-schedule", "btn-seed-check", "btn-seed-follow", "btn-acc-add"]) if ($(id)) $(id).disabled = shown;
+  const c = state.collector || {};
+  $("collector-line").textContent = !c.configured
+    ? (shown ? "Outside presentation mode, sessions run on this Mac." : "Sessions run on this Mac.") +
+      " No remote collector is configured (set PRAG_COLLECTOR_URL to one's health URL to see its state here)."
+    : c.reachable ? `Remote collector reachable at ${c.url}${c.status && c.status >= 400 ? ` (it answered ${c.status})` : ""}.`
+    : `Home collector offline (${c.url}${c.why ? ": " + c.why : ""}). Start the configured PC and connect its Tailscale connection, if used.`;
 }
 
 function renderStatus() {
@@ -1899,6 +1942,7 @@ async function pollOutput() {
 }
 
 async function start(digestOnly) {
+  if (state && state.presentation) { toast(BLOCKED, true); return; }
   const body = {account: account(), engagement: mode(), minutes: Number($("minutes").value) || DEFAULTS.minutes,
                 start_llm: $("start-llm").checked, digest_only: digestOnly, headless: $("headless").checked};
   try {
@@ -3106,7 +3150,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="PRAG control panel (opens in your browser)")
     parser.add_argument("--port", type=int, default=8765, help="Port on 127.0.0.1 (another one if it's taken)")
     parser.add_argument("--no-browser", action="store_true", help="Don't open the browser")
+    parser.add_argument("--presentation", action="store_true",
+                        help="stored sessions, simulated data and local models only: collection, login, follows and "
+                             "schedule changes are refused")
     args = parser.parse_args()
+    global PRESENTATION
+    PRESENTATION = args.presentation
 
     init_db()
     server = None
@@ -3119,7 +3168,8 @@ def main() -> None:
     port = server.server_address[1]
     ALLOWED_HOSTS.update({f"127.0.0.1:{port}", f"localhost:{port}"})
     url = f"http://127.0.0.1:{port}/"
-    print(f"🎛  PRAG panel: {url}\n    Ctrl+C closes the panel; a run in progress keeps going.")
+    print(f"🎛  PRAG panel: {url}" + (" (presentation mode: collection disabled)" if PRESENTATION else "")
+          + "\n    Ctrl+C closes the panel; a run in progress keeps going.")
     if not args.no_browser:
         threading.Timer(0.5, webbrowser.open, (url,)).start()
     try:

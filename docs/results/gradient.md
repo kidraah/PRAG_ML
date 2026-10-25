@@ -19,7 +19,7 @@ Languages: English 22,711, Hinglish 10,948, Hindi 10,848.
 
 Right-leaning, security and infrastructure first; cricket, gadgets, Hindi comedy, street food.
 
-Feed: 3,417 demo_session, 13,147 generator, 600 recommender, 123 session; 13,864 reactions in the persona's own words. Jev says it would watch 68% of its feed and 46% of all 44,507 items it judged.
+Feed: 3,417 demo_session, 13,147 generator, 600 recommender, 123 session; 17,255 reactions in the persona's own words. Jev says it would watch 68% of its feed and 46% of all 44,507 items it judged.
 
 Top topics in its feed: cricket 11%, infrastructure 7%, national security 6%, gadgets 5%, party politics 5%, science space 5%, tech ai 5%, crime safety 4%, government schemes 4%, world news 4%.
 
@@ -27,7 +27,7 @@ Top topics in its feed: cricket 11%, infrastructure 7%, national security 6%, ga
 
 Left-leaning, labour, public services, civil liberties, environment; football, indie music, photography, gaming.
 
-Feed: 3,325 demo_session, 17,842 generator, 600 recommender, 171 session; 18,592 reactions in the persona's own words. Jev says it would watch 68% of its feed and 51% of all 44,507 items it judged.
+Feed: 3,325 demo_session, 17,842 generator, 600 recommender, 171 session; 21,907 reactions in the persona's own words. Jev says it would watch 68% of its feed and 51% of all 44,507 items it judged.
 
 Top topics in its feed: civil liberties 6%, environment 6%, party politics 6%, football 6%, economy 5%, tech ai 5%, infrastructure 5%, science space 5%, cricket 5%, labour 5%.
 
@@ -159,7 +159,10 @@ Versions, on the same frozen evaluation set:
 |---|---|---|---|---|---|---|---|
 | lora-v1 | 4,132 | 500 | 49.3 | lora-v1 held-out examples | 80.53 | 3.85 | 4.06 |
 | lora-v2 (continued) | 1,299 | 300 | 30.2 | lora-v1 held-out examples | 80.53 | 4.27 | 4.33 |
-| lora-v3 | 3,490 | 450 | 60.0 | its own held-out examples | 33.79 | 4.92 | 5.80 |
+| lora-v3 | 3,490 | 450 | 60.0 | lora-v1 held-out examples | 80.53 | 5.14 | 5.80 |
+| lora-v4 (continued) | 1,196 | 500 | 67.6 | lora-v1 held-out examples | 80.53 | 6.57 | 7.43 |
+
+Chat and debate use **lora-v3**.
 
 ### @mlproject02: persona language model
 
@@ -167,7 +170,10 @@ Versions, on the same frozen evaluation set:
 |---|---|---|---|---|---|---|---|
 | lora-v1 | 4,640 | 500 | 49.7 | lora-v1 held-out examples | 130.63 | 3.34 | 4.86 |
 | lora-v2 (continued) | 1,119 | 300 | 30.9 | lora-v1 held-out examples | 130.63 | 4.34 | 5.97 |
-| lora-v3 | 3,585 | 450 | 59.5 | its own held-out examples | 40.22 | 5.34 | 5.77 |
+| lora-v3 | 3,585 | 450 | 59.5 | lora-v1 held-out examples | 130.63 | 5.20 | 5.77 |
+| lora-v4 (continued) | 1,269 | 300 | 48.8 | lora-v1 held-out examples | 130.63 | 5.75 | 6.46 |
+
+Chat and debate use **lora-v3**.
 
 ## Simulated sessions
 

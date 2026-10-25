@@ -26,6 +26,7 @@ panel shows the personas typing. Chat remembers the conversation so far.
 """
 
 import itertools
+import json
 import queue
 import re
 import threading
@@ -56,15 +57,23 @@ def availability() -> dict:
 
     if not isinstance(try_to_load_from_cache(lora.BASE_MODEL, "config.json"), str):
         return {"ok": False, "why": f"The base model {lora.BASE_MODEL} isn't downloaded yet."}
-    adapters = {a: (f"lora-v{found[0]}" if (found := lora.latest_adapter(a)) else None) for a in store.ACCOUNTS}
-    return {"ok": True, "base": lora.BASE_MODEL, "adapters": adapters}
+    adapters = {a: (f"lora-v{found[0]}" if (found := lora.active_adapter(a)) else None) for a in store.ACCOUNTS}
+    newest = {a: (found[0] if (found := lora.latest_adapter(a)) else None) for a in store.ACCOUNTS}
+    why = {}
+    for a in store.ACCOUNTS:
+        try:
+            with open(lora.active_path(a)) as fh:
+                why[a] = json.load(fh).get("why") or ""
+        except (OSError, ValueError):
+            why[a] = ""
+    return {"ok": True, "base": lora.BASE_MODEL, "adapters": adapters, "newest": newest, "why": why}
 
 
 def model_for(account: str | None):
     """(model, tokenizer, adapter name) for a persona, or the plain base model for None (the moderator)."""
     from mlx_lm import load
 
-    found = lora.latest_adapter(account) if account else None
+    found = lora.active_adapter(account) if account else None
     key = f"{account}|{found[1] if found else 'base'}"
     if key not in _models:
         for old in [k for k in _models if k.startswith(f"{account}|")]:

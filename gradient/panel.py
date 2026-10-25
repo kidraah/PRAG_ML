@@ -479,9 +479,13 @@ function gPrefBody(title, runs, about) {
 function gLoraCard(account, runs) {
   if (!runs.length) return h("div", {class: "card"}, h("h3", {text: `@${account}: persona language model`}),
     h("p", {class: "hint", text: "No adapter yet. Pick the account above and press “Train a new adapter” (about 15–25 minutes on this Mac)."}));
-  const r = runs[runs.length - 1].report, e = r.eval;
+  const r = runs[runs.length - 1].report, e = r.eval, t = (G.models && G.models.talk) || {};
+  const active = (t.adapters || {})[account], newest = (t.newest || {})[account];
+  const setAside = active && newest && active !== `lora-v${newest}`;
   return h("div", {class: "card"},
-    h("div", {class: "status"}, h("h3", {text: `@${account}: persona language model`}), h("span", {class: "badge ok", text: `lora-v${r.version}`})),
+    h("div", {class: "status"}, h("h3", {text: `@${account}: persona language model`}),
+      h("span", {class: "badge ok", text: active ? `chat and debate use ${active}` : `lora-v${r.version}`})),
+    setAside ? h("p", {class: "notice", text: `The newest, lora-v${newest} (below), is kept but not used. ${(t.why || {})[account] || ""}`}) : null,
     h("p", {class: "hint", text: `${r.base_model} + a rank-${r.lora.rank} LoRA adapter, ${gNum(r.examples.train)} training examples from this feed, ${r.iters} steps` +
       (r.resumed_from ? `, continued from lora-v${r.resumed_from}` : "") + `, ${r.minutes} min.`}),
     h("div", {class: "g-mini"},
@@ -490,9 +494,13 @@ function gLoraCard(account, runs) {
       e.other ? h("span", {}, h("b", {text: gFix(e.other.ppl, 2)}), ` this adapter on @${e.other.account}'s examples`) : null),
     h("p", {class: "hint", text: "Lower is better: how surprised the model is by this persona's own held-out words. The adapter should beat the base model on its persona, and fit the other persona worse than its own."}),
     gCurve(r.train_loss, r.val_loss),
-    runs.length > 1 ? h("div", {class: "table-scroll"}, h("table", {class: "data"}, h("tr", {}, ...["Version", "Trained", "Examples", "Base ppl", "Adapter ppl"].map((t, i) => h("th", {class: i > 1 ? "num" : null, text: t}))),
-      ...runs.map((x) => h("tr", {}, h("td", {text: "lora-v" + x.version}), h("td", {text: localTime(x.created_at)}), h("td", {class: "num", text: gNum(x.report.examples.train)}),
-        h("td", {class: "num", text: gFix(x.report.eval.base.ppl, 2)}), h("td", {class: "num", text: gFix(x.report.eval.adapter.ppl, 2)}))))) : null);
+    runs.length > 1 ? h("div", {class: "table-scroll"}, h("table", {class: "data"}, h("tr", {}, ...["Version", "Trained", "Examples", "Scored on", "Adapter ppl", "In use"].map((t, i) => h("th", {class: [2, 4].includes(i) ? "num" : null, text: t}))),
+      ...runs.map((x) => h("tr", {class: active === "lora-v" + x.version ? "g-chosen" : null}, h("td", {text: "v" + x.version + (x.report.resumed_from ? ` ← v${x.report.resumed_from}` : "")}),
+        h("td", {text: localTime(x.created_at)}), h("td", {class: "num", text: gNum(x.report.examples.train)}),
+        h("td", {text: /v1/.test(x.report.eval_set || (x.report.resumed_from ? "v1" : "")) ? "v1 held-out" : "own held-out"}),
+        h("td", {class: "num", text: gFix(x.report.eval.adapter.ppl, 2)}),
+        h("td", {text: active === "lora-v" + x.version ? "✓" : ""})))),
+      h("p", {class: "hint", text: "Compare adapter perplexities only between rows scored on the same examples."})) : null);
 }
 
 function gCurve(train, val) {

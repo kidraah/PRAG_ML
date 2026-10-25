@@ -76,9 +76,14 @@ def lora_section(account: str, history: list[dict]) -> list[str]:
         r = h["report"]
         e = r["eval"]
         out.append(f"| lora-v{r['version']}{' (continued)' if r.get('resumed_from') else ''} | {r['examples']['train']:,} | "
-                   f"{r['iters']} | {r['minutes']} | {r.get('eval_set') or 'its own held-out examples'} | "
+                   f"{r['iters']} | {r['minutes']} | {r.get('eval_set') or ('lora-v1 held-out examples' if r.get('resumed_from') else 'its own held-out examples')} | "
                    f"{fmt(e['base']['ppl'], 2)} | {fmt(e['adapter']['ppl'], 2)} | "
                    f"{fmt((e.get('other') or {}).get('ppl'), 2)} |")
+    from gradient import lora
+
+    active = lora.active_adapter(account)
+    if active:
+        out += ["", f"Chat and debate use **lora-v{active[0]}**."]
     return out + [""]
 
 

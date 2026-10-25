@@ -1,6 +1,10 @@
 # Presenting PRAG in ten minutes
 
-Start the panel first: `python launch.py`. The persona models load on the first question, which takes about
+Start the panel first: `python launch.py --presentation`. Presentation mode works from stored data and local
+models only: starting a session, logging in, following, account changes and schedule changes are refused (the Run
+and Schedule tabs say "Collection disabled in presentation mode. Stored sessions and simulated data remain
+available."), while replay, Feed, Digest, Training, chat, debate and the analyses all work offline. If a remote
+collector is set up, `PRAG_COLLECTOR_URL=<its health URL>` makes the Run tab show whether it actually answers. The persona models load on the first question, which takes about
 15 seconds, so ask one before you begin.
 
 ## 1. The problem (1 min)

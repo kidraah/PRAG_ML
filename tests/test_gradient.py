@@ -479,6 +479,19 @@ class LoraTests(Temp):
         written = sum("Written answer" in e["messages"][2]["content"] for e in train)
         self.assertGreater(written, (len(train) - written) // 2)  # short takes stay a minority
 
+    def test_the_active_adapter_can_be_an_older_version(self):
+        with mock.patch.object(store, "MODEL_DIR", os.path.join(self.tmp, "models")):
+            for v in (3, 4):
+                os.makedirs(lora.adapter_dir("mlproject01", v))
+                open(os.path.join(lora.adapter_dir("mlproject01", v), "adapters.safetensors"), "w").close()
+            self.assertEqual(lora.active_adapter("mlproject01")[0], 4)  # nothing set: the newest
+            lora.set_active("mlproject01", 3, "v4 forgot")
+            self.assertEqual((lora.active_adapter("mlproject01")[0], lora.latest_adapter("mlproject01")[0]), (3, 4))
+            with self.assertRaises(ValueError):
+                lora.set_active("mlproject01", 9)
+            lora.set_active("mlproject01", None)
+            self.assertEqual(lora.active_adapter("mlproject01")[0], 4)
+
     def test_a_reel_served_later_is_new_in_the_batch_it_joined_the_feed(self):
         self.feed(accounts=("mlproject01", "mlproject02"))
         # mlproject02's reels, written long ago, join mlproject01's feed in a later batch (as a simulation does)
