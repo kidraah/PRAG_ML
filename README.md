@@ -12,7 +12,7 @@
 ![Playwright](https://img.shields.io/badge/playwright-chromium-0e0e11?style=flat-square&logo=playwright&logoColor=white)
 ![LM Studio](https://img.shields.io/badge/LLM-Qwen%203.5%209B%20local-0e0e11?style=flat-square)
 ![Whisper](https://img.shields.io/badge/speech-MLX%20Whisper-0e0e11?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-257%20passing-22c55e?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-261%20passing-22c55e?style=flat-square)
 ![Local first](https://img.shields.io/badge/data-local%20first-ffffff?style=flat-square&labelColor=0e0e11)
 
 [Watch the 25-second video](docs/media/prag-brag.mp4) · [How it works](#how-it-works) · [Run it](#run-it) · [The study](#the-study) · [The Gradient](#the-gradient-per-persona-models-chat-and-debate)
@@ -76,10 +76,10 @@ and why this way rather than another, is in [docs/TRAINING.md](docs/TRAINING.md)
   Pune: labour, public services, civil liberties and the environment, plus football, indie music, photography and
   gaming. Each persona has a readable description and a structured profile (topic weights, stance and language
   preferences), both editable in the Persona tab.
-- **The training corpus.** About 24,000 unique items in English, Hindi and Hinglish. They are the reels the Instagram
-  sessions recorded, about 15,300 reels written for each feed by an LLM following the persona's profile (2,400 of them
-  about the latest real news stories, picked for each persona by its own preference model), news headlines and
-  Wikipedia. Every item records where it came from. Jev judges every item for both personas, and each persona
+- **The training corpus.** About 44,500 unique items in English, Hindi and Hinglish. They are the reels the Instagram
+  sessions recorded, about 31,000 reels written for the two feeds by an LLM following each persona's profile (about
+  18,000 of them about real news stories from the last two weeks, picked for each persona by its own preference
+  model and linked to their articles), news headlines and Wikipedia. Every item records where it came from. Jev judges every item for both personas, and each persona
   has its own reaction, in its own words, to every reel in its feed.
 - **Preference models, one per persona.** A majority baseline, the quick rules, TF-IDF + logistic regression and
   multilingual embeddings + logistic regression, all on the same story-grouped splits. The best model and its
@@ -87,7 +87,12 @@ and why this way rather than another, is in [docs/TRAINING.md](docs/TRAINING.md)
   persona, against about 0.6 for the hand-written rules, and 0.70 / 0.90 on the 59 real Instagram reels
   in each test set (a small, noisy slice).
 - **Persona language models.** A LoRA adapter per persona on Qwen3 4B (4-bit, MLX), trained on its feed, its
-  reactions and answers that cite its reels. It runs entirely on the Mac.
+  reactions, and about 3,000 written answers and debate turns that interpret its reels and cite them. It runs
+  entirely on the Mac.
+- **DEMO: simulated sessions.** Set Data to Demo in the panel for 14 days of *simulated* sessions for both personas
+  (`python -m gradient.simulate`): a recommender that learns from the persona's behaviour, the real engagement policy,
+  timestamped logs you can replay, the feed day by day, and daily digests, all under a "DEMO — simulated sessions"
+  banner and in their own database. Live shows only the real sessions.
 - **Ask.** *Chat* with a persona, run a *debate* between both on a topic of your choice (with a neutral moderator),
   ask *one question, two worldviews*, or use the *feed predictor*: paste any reel and see whether each persona would
   watch it and whose feed it would land in. Answers retrieve only from the persona's own feed, ranked by its

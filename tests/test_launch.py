@@ -128,10 +128,10 @@ class HTTPTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def request(self, method, path, body=None, token=True, host=None):
+    def request(self, method, path, body=None, token=True, host=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         self.addCleanup(conn.close)
-        headers = {"Host": host or self.host, "Content-Type": "application/json"}
+        headers = {"Host": host or self.host, "Content-Type": "application/json", **(headers or {})}
         if token:
             headers["X-PRAG-Token"] = launch.TOKEN
         conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
@@ -244,11 +244,11 @@ class HTTPTests(unittest.TestCase):
                 mock.patch.object(launch.feed_study, "dataset", return_value=[{"code": "A", "category": "sports"}]), \
                 mock.patch.object(launch.feed_study, "dataset_all", return_value=[{"code": "A"}, {"code": "B"}]):
             status, _, body = self.request("GET", "/api/feed?account=acct")
-            self.assertEqual((status, json.loads(body)), (200, {"counts": {"reels": 3}, "topics": topics}))
+            self.assertEqual((status, json.loads(body)), (200, {"counts": {"reels": 3}, "topics": topics, "demo": False}))
             self.assertEqual(analysis.call_args.args[1], "acct")  # one persona's feed
             self.assertEqual(self.request("GET", "/api/feed?account=nobody")[0], 400)
             status, _, body = self.request("GET", "/api/feed?scope=all")
-            self.assertEqual((status, json.loads(body)), (200, {"scope": "all", "topics": topics}))
+            self.assertEqual((status, json.loads(body)), (200, {"scope": "all", "topics": topics, "demo": False}))
             self.assertIsNone(analysis.call_args.args[1])  # every account's
             status, headers, body = self.request("GET", "/api/feed/export?account=acct&phase=all&format=csv")
             self.assertEqual(status, 200)
@@ -308,6 +308,43 @@ class HTTPTests(unittest.TestCase):
         with mock.patch.object(gradient_api.retrieval, "search", return_value={"items": [], "model": None, "enough": False}):
             predicted = json.loads(self.request("POST", "/api/gradient/predict", {"text": "A long enough reel text"})[2])
         self.assertEqual((predicted["personas"][0]["p"], predicted["feed"]), (None, None))  # no model yet: says so
+
+    def test_the_demo_source_reads_only_the_demo_database(self):
+        from database import db
+        from gradient import simulate
+
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        live_path, demo_path = os.path.join(tmp, "live.db"), os.path.join(tmp, "demo.db")
+        self.enterContext(mock.patch.object(db, "DB_PATH", live_path))
+        self.enterContext(mock.patch.object(db, "DEMO_DB_PATH", demo_path))
+        self.enterContext(mock.patch.object(launch, "DEMO_DB_PATH", demo_path))
+        self.enterContext(mock.patch.object(launch.feed_model, "analysis", return_value={"trained": False}))
+        for path, n in ((live_path, 1), (demo_path, 3)):
+            conn = db.get_connection(path)
+            db.init_db(conn)
+            conn.executescript(simulate.TABLES)
+            sid = conn.execute("INSERT INTO sessions (account, scorer) VALUES ('acct', 's')").lastrowid
+            for seq in range(n):
+                db.log_impression({"session_id": sid, "seq": seq, "code": f"c{path[-7:]}{seq}", "creator": "x",
+                                   "score_basis": "score", "value_score": 0.9, "decision": "WATCH"}, conn)
+            if path == demo_path:
+                conn.execute("INSERT INTO demo_sessions VALUES (?, 'acct', '2026-10-14', '2026-10-14 03:00:00', "
+                             "'2026-10-14 03:20:00', '2026-10-25 10:00:00', 's', 0.5, ?)", (sid, json.dumps({"reels": 3})))
+                conn.execute("INSERT INTO demo_log VALUES (?, 0, '2026-10-14 03:00:00', '🧪  DEMO — simulated session')", (sid,))
+            conn.commit()
+            conn.close()
+        live = json.loads(self.request("GET", "/api/feed?account=acct")[2])
+        demo = json.loads(self.request("GET", "/api/feed?account=acct", headers={"X-PRAG-Source": "demo"})[2])
+        self.assertEqual((live["counts"]["reels"], live["demo"]), (1, False))
+        self.assertEqual((demo["counts"]["reels"], demo["demo"]), (3, True))
+        self.assertEqual(len(demo["days"]), 1)
+        days = json.loads(self.request("GET", "/api/demo/sessions?account=acct")[2])["days"]
+        self.assertEqual((days[0]["date"], days[0]["sessions"][0]["reels"]), ("2026-10-14", 3))
+        log = json.loads(self.request("GET", f"/api/demo/log?session={days[0]['sessions'][0]['id']}")[2])
+        self.assertIn("DEMO", log["lines"][0]["line"])
+        self.assertEqual(log["session"]["generated_at"], "2026-10-25 10:00:00")  # kept apart from the simulated time
+        self.assertEqual(self.request("GET", "/api/demo/log?session=999")[0], 400)
+        self.assertEqual(self.request("GET", "/api/feed?account=acct&day=yesterday")[0], 400)
 
     def test_train_the_feed_model(self):
         launch.Panel.runner._launch.return_value = {"key": "m"}

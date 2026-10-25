@@ -91,6 +91,83 @@ CSS = r"""
 .g-meter .track2 em { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--warn); }
 .g-meter b { font: 500 13px var(--mono); text-align: right; }
 .g-notice-ok { border-left-color: var(--ok); }
+/* Ask: chat and debate windows */
+.g-askbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 0 0 18px; }
+.g-models { font: 500 11.5px var(--mono); color: var(--muted); }
+.g-models.bad { color: var(--warn); }
+.g-win { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: calc(100vh - 220px); min-height: 540px;
+         background: var(--panel); border: 2px solid var(--line); box-shadow: var(--shadow-lg); margin-bottom: 30px; }
+.g-win-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px;
+              border-bottom: 2px solid var(--line); background: var(--bar); color: var(--bar-text); }
+.g-contact { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 6px; cursor: pointer; text-align: left;
+             background: transparent; color: var(--bar-text); border: 2px solid transparent; font: inherit; }
+.g-contact:hover { border-color: var(--rule); }
+.g-contact.on { border-color: var(--line); background: var(--hover); }
+.g-contact b { display: block; font: 600 15px var(--body); }
+.g-contact small { display: block; font-size: 13px; color: var(--bar-muted); }
+.g-avatar { flex: none; width: 36px; height: 36px; display: grid; place-items: center; font: 700 12px var(--display);
+            letter-spacing: 1px; border: 2px solid var(--line); }
+.g-avatar.p1 { background: var(--accent); color: var(--on-accent); }
+.g-avatar.p2 { background: var(--panel); color: var(--text); box-shadow: inset 0 0 0 2px var(--panel), inset 0 0 0 4px var(--line); }
+.g-avatar.mod { background: var(--glass); color: var(--muted); font-size: 10px; }
+.g-vs { font: 600 12px var(--display); letter-spacing: 2px; color: var(--bar-muted); }
+.g-title { font: 600 14px var(--display); letter-spacing: 1px; }
+.g-thread { overflow-y: auto; overscroll-behavior: contain; padding: 22px 22px 8px; display: flex; flex-direction: column; gap: 18px;
+         scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.g-msg { display: flex; gap: 12px; align-items: flex-start; max-width: min(78ch, 86%); }
+.g-msg.user { align-self: flex-end; }
+.g-msg.right { align-self: flex-end; flex-direction: row-reverse; }
+.g-msg .g-body { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.g-msg.right .g-body { align-items: flex-end; }
+.g-name { font: 500 11px var(--mono); color: var(--muted); }
+.g-bubble { padding: 11px 15px; font-size: 17px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+            background: var(--glass); border: 2px solid var(--line); }
+.g-msg.user .g-bubble { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+[data-theme="brutal"] .g-msg.user .g-bubble { border-color: var(--line); }
+.g-bubble .g-cite { font-size: 10.5px; vertical-align: 2px; }
+.g-caret::after { content: "_"; animation: blink 1.1s steps(1) infinite; margin-left: 1px; }
+.g-dots { display: inline-flex; gap: 5px; padding: 6px 0; }
+.g-dots i { width: 7px; height: 7px; background: var(--muted); animation: g-dot 1.2s infinite; }
+.g-dots i:nth-child(2) { animation-delay: .2s; } .g-dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes g-dot { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+.g-srcs { display: flex; flex-wrap: wrap; gap: 6px; }
+.g-chip { font: 500 11.5px var(--mono); padding: 3px 8px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+          cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-chip:hover, .g-chip.open { color: var(--text); background: var(--hover); }
+.g-chip.cited { color: var(--text); border-width: 2px; }
+.g-src { border: 1px solid var(--rule); border-left: 3px solid var(--line); padding: 10px 12px; font-size: 15px; max-width: 70ch;
+         background: var(--panel); }
+.g-src .sub { font: 500 11.5px var(--mono); color: var(--muted); margin-top: 6px; }
+.g-round { align-self: center; font: 600 11px var(--display); letter-spacing: 2px; color: var(--muted); display: flex; align-items: center;
+           gap: 12px; width: 100%; }
+.g-round::before, .g-round::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.g-topic { align-self: center; text-align: center; max-width: 60ch; }
+.g-topic small { display: block; font: 500 10.5px var(--display); letter-spacing: 2px; color: var(--muted); }
+.g-topic b { font: 600 22px/1.3 var(--display); letter-spacing: .5px; }
+.g-mod { align-self: stretch; border: 2px solid var(--line); background: var(--glass); padding: 14px 18px; margin: 4px 0 6px; }
+.g-mod .g-name { margin-bottom: 8px; }
+.g-mod .text { white-space: pre-wrap; line-height: 1.55; font-size: 16px; }
+.g-mod .text b { font: 600 12px var(--display); letter-spacing: 1.4px; text-transform: uppercase; color: var(--text); }
+.g-empty { margin: auto; text-align: center; max-width: 54ch; padding: 30px 10px; }
+.g-empty .g-avatar { width: 64px; height: 64px; font-size: 18px; margin: 0 auto 14px; }
+.g-empty h3 { font: 600 20px var(--display); letter-spacing: .5px; margin: 0 0 8px; }
+.g-empty p { color: var(--muted); margin: 0 0 16px; }
+.g-suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.g-suggest button { font: 600 15px var(--body); padding: 8px 12px; border: 2px solid var(--line); background: var(--glass); color: var(--text);
+                    cursor: pointer; }
+.g-suggest button:hover { background: var(--hover); }
+.g-composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 14px 8px; border-top: 2px solid var(--line); }
+.g-composer textarea { flex: 1; resize: none; min-height: 48px; max-height: 180px; font-size: 17px; line-height: 1.4; padding: 12px 14px; }
+.g-send { flex: none; height: 48px; min-width: 48px; display: inline-grid; place-items: center; padding: 0 16px; cursor: pointer;
+          font: 700 15px var(--body); background: var(--accent); color: var(--on-accent); border: 2px solid var(--accent); }
+.g-send svg { width: 20px; height: 20px; fill: currentColor; }
+.g-send:disabled { opacity: .35; cursor: not-allowed; }
+.g-send.stop { background: var(--panel); color: var(--text); border-color: var(--line); }
+[data-theme="brutal"] .g-send { border-color: var(--line); }
+.g-composer .seg { align-self: center; }
+.g-foot { padding: 0 16px 10px; margin: 0; font-size: 13px; color: var(--muted); }
+@media (max-width: 760px) { .g-msg { max-width: 94%; } .g-win { height: calc(100vh - 160px); } }
+
 @media (max-width: 1100px) {
   .g-pair, .g-debate { grid-template-columns: minmax(0, 1fr); }
   .g-turn.right, .g-turn.left, .g-moderator { grid-column: 1; }
@@ -150,16 +227,11 @@ SECTIONS = r"""
       </section>
 
       <section id="tab-ask" hidden>
-        <div class="card">
-          <h2 class="headline">Ask the personas</h2>
-          <p class="lede">Each persona answers with its own language model, from evidence in its own feed only, ranked
-            by its own preference model. Every reel it cites is shown; a citation that doesn't match a retrieved reel
-            is removed. A persona believing something doesn't make it true.</p>
-          <div class="row"><div class="seg" id="g-mode" role="radiogroup" aria-label="What to do"></div></div>
-          <p class="notice" id="g-avail" hidden></p>
-          <div class="g-ask-form" id="g-form"></div>
+        <div class="g-askbar">
+          <div class="seg" id="g-mode" role="radiogroup" aria-label="What to do"></div>
+          <span class="g-models" id="g-avail"></span>
         </div>
-        <div id="g-out"></div>
+        <div id="g-stage"></div>
       </section>
 """
 
@@ -181,7 +253,8 @@ const G = {overview: null, models: null, mode: store.get("g.mode", "chat"), brow
 const gPct = (x) => (x == null ? "–" : `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`);
 const gNum = (x) => (x == null ? "–" : Number(x).toLocaleString());
 const gFix = (x, d = 3) => (x == null ? "–" : Number(x).toFixed(d));
-const VIA = {session: "Instagram sessions", generator: "Written for its feed", recommender: "Served by the recommender"};
+const VIA = {session: "Instagram sessions", generator: "Written for its feed", recommender: "Served by the recommender",
+             demo_session: "Shown in DEMO simulated sessions"};
 const STANCES = {supportive: "Supportive of the government", critical: "Critical of it", neutral: "Neutral reporting",
                  not_political: "Not political"};
 
@@ -417,71 +490,264 @@ async function gTrain(body) {
 
 const G_MODES = [["chat", "Chat"], ["debate", "Debate"], ["compare", "One question, two worldviews"], ["predict", "Feed predictor"]];
 const G_TRY = {
-  chat: ["What's going on with fuel prices?", "Kya chal raha hai cricket mein?", "Are the new expressways worth it?",
-         "What do you think about the gig workers' strike?", "Any good phone launches lately?", "What's the latest on the Moon missions?"],
+  chat: {mlproject01: ["Are the new expressways worth the tolls?", "Kya chal raha hai cricket mein?", "What's the latest at the border?",
+                       "Any good phone launches lately?"],
+         mlproject02: ["What's going on with the gig workers' strike?", "How bad is the air in Delhi right now?",
+                       "Any good indie music lately?", "What do you think of the new labour codes?"]},
   debate: ["The Agniveer scheme", "Delhi's air pollution", "Vande Bharat trains and fares", "Internet shutdowns", "MGNREGA wages"],
   compare: ["Is the government handling unemployment well?", "What's happening at the border with China?",
             "Should India host the Olympics?", "Are government schools getting better?"],
   predict: ["Naya expressway khul gaya! Delhi se Jaipur ab sirf 3 ghante. Truck drivers bhi khush, toll thoda zyada hai par time bachta hai. #infrastructure",
             "Delivery riders in Bengaluru went offline today after the app cut per-order pay again. 'We work 12 hours and take home less than minimum wage,' one rider said. #gigworkers"],
 };
+const G_WHO = {mlproject01: {tile: "01", cls: "p1"}, mlproject02: {tile: "02", cls: "p2"}};
+const SEND_ICON = "M2.01 21L23 12 2.01 3 2 10l15 2-15 2z";
+G.chats = (() => { try { return JSON.parse(localStorage.getItem("feedlab.g.chats")) || {}; } catch { return {}; } })();
+G.chatWith = store.get("g.chat", "mlproject01");
+G.debate = null;
+G.open = new Set();  // source cards the viewer opened
+
+function gSaveChats() {
+  try { localStorage.setItem("feedlab.g.chats", JSON.stringify(G.chats, (k, v) => (k === "typing" ? undefined : v))); } catch {}
+}
+
+function gPersonaName(account) {
+  const p = G.overview && G.overview.personas.find((x) => x.account === account);
+  return p ? p.name : "";
+}
 
 function gAskInit() {
-  gSeg("g-mode", G_MODES, G.mode, (v) => { G.mode = v; store.set("g.mode", v); gForm(); });
-  if (!G.models) api("/api/gradient/models").then((m) => { G.models = m; gAvail(); }).catch(() => {});
-  else gAvail();
-  gForm();
+  gSeg("g-mode", G_MODES, G.mode, (v) => { G.mode = v; store.set("g.mode", v); gStage(); });
+  if (!G.overview) api("/api/gradient/overview").then((o) => { G.overview = o; gStage(); }).catch(() => {});
+  api("/api/gradient/models").then((m) => { G.models = m; gAvail(); }).catch(() => {});
+  gAvail();
+  gStage();
 }
 
 function gAvail() {
   const t = G.models && G.models.talk, el = $("g-avail");
-  if (!t) return;
-  el.hidden = false;
-  el.classList.toggle("g-notice-ok", t.ok);
+  if (!t) { el.textContent = ""; return; }
+  el.classList.toggle("bad", !t.ok);
   el.textContent = !t.ok ? `The persona models can't run yet: ${t.why}` :
-    "Models: " + Object.entries(t.adapters).map(([a, v]) => `@${a} ${v || "(base model, no adapter yet)"}`).join(", ") + `, on ${t.base}.`;
+    Object.entries(t.adapters).map(([a, v]) => `@${a} ${v || "base model"}`).join(" · ") + ` · ${t.base.split("/").pop()}`;
 }
 
-function gForm() {
-  const f = $("g-form"), mode = G.mode;
-  const input = mode === "predict" ? h("textarea", {id: "g-text", rows: 5, placeholder: "Paste a reel's caption, the text on it, or what's said in it"})
-    : h("input", {type: "text", id: "g-text", maxlength: 500, placeholder: mode === "debate" ? "A topic to debate" : "Ask a question"});
-  input.onkeydown = (e) => { if (e.key === "Enter" && mode !== "predict") gGo(); };
-  const parts = [];
-  if (mode === "chat") {
-    const seg = h("div", {class: "seg small", id: "g-chat-account", role: "radiogroup", "aria-label": "Persona"});
-    parts.push(h("div", {class: "row"}, h("span", {class: "hint", text: "Ask"}), seg));
-  }
-  if (mode === "debate") parts.push(h("div", {class: "row"}, h("span", {class: "hint", text: "Rounds"}),
-    h("div", {class: "seg small", id: "g-rounds", role: "radiogroup", "aria-label": "Rounds"})));
-  parts.push(input, h("div", {class: "g-try"}, h("span", {class: "hint", text: "Try:"}), ...G_TRY[mode].map((t) => {
-    const b = h("button", {class: "linkish", text: t.length > 60 ? t.slice(0, 58) + "…" : t});
-    b.onclick = () => { $("g-text").value = t; if (mode !== "predict") gGo(); };
-    return b;
-  })));
-  const go = h("button", {class: "btn primary", id: "g-go", text: {chat: "Ask", debate: "Start the debate", compare: "Ask both", predict: "Predict"}[mode]});
+function gBusy() { return G.job && (G.job.status === "queued" || G.job.status === "running"); }
+
+function gStage() {
+  const stage = $("g-stage");
+  if (G.mode === "chat") return stage.replaceChildren(gChatWindow());
+  if (G.mode === "debate") return stage.replaceChildren(gDebateWindow());
+  const input = G.mode === "predict" ? h("textarea", {id: "g-text", rows: 5, placeholder: "Paste a reel's caption, the text on it, or what's said in it"})
+    : h("input", {type: "text", id: "g-text", maxlength: 500, placeholder: "Ask both personas the same question"});
+  if (G.mode !== "predict") input.onkeydown = (e) => { if (e.key === "Enter") gGo(); };
+  const go = h("button", {class: "btn primary", id: "g-go", text: G.mode === "predict" ? "Predict" : "Ask both"});
   go.onclick = gGo;
-  const stopBtn = h("button", {class: "btn", id: "g-stop", text: "Stop", hidden: true});
-  stopBtn.onclick = gStop;
-  parts.push(h("div", {class: "actions", style: "margin-top:4px"}, go, stopBtn, h("span", {class: "hint", id: "g-busy"})));
-  f.replaceChildren(...parts);
-  if (mode === "chat") gSeg("g-chat-account", [["mlproject01", "@mlproject01"], ["mlproject02", "@mlproject02"]],
-                            store.get("g.chat", "mlproject01"), (v) => store.set("g.chat", v));
-  if (mode === "debate") gSeg("g-rounds", [["2", "2"], ["3", "3"]], "2", () => {});
-  $("g-out").replaceChildren();
-  if (mode === "chat") gDrawChat();
+  stage.replaceChildren(h("div", {class: "card"},
+    h("p", {class: "lede", text: G.mode === "predict" ? "Paste any reel: each persona's preference model says whether it would watch it, and the whose-feed model says which feed it would land in."
+      : "Both personas answer the same question, each from its own feed, with how far apart their answers and their evidence are."}),
+    h("div", {class: "g-ask-form", style: "margin-top:14px"}, input,
+      h("div", {class: "g-try"}, h("span", {class: "hint", text: "Try:"}), ...G_TRY[G.mode].map((t) => {
+        const b = h("button", {class: "linkish", text: t.length > 60 ? t.slice(0, 58) + "…" : t});
+        b.onclick = () => { $("g-text").value = t; gGo(); };
+        return b;
+      })),
+      h("div", {class: "actions", style: "margin-top:4px"}, go, h("span", {class: "hint", id: "g-busy"})))),
+    h("div", {id: "g-out"}));
 }
+
+// one window frame: head, the log, the composer
+function gWindow(head, log, composer, foot) {
+  return h("div", {class: "g-win"}, h("div", {class: "g-win-head"}, ...head),
+    h("div", {class: "g-thread", id: "g-log", role: "log", "aria-live": "polite"}, ...log), composer,
+    foot ? h("p", {class: "g-foot", text: foot}) : null);
+}
+
+function gComposer(placeholder, onSend, extra) {
+  const ta = h("textarea", {id: "g-input", rows: 1, maxlength: 500, placeholder, "aria-label": placeholder});
+  const fit = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 4, 180) + "px"; };
+  ta.oninput = fit;
+  ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!gBusy()) onSend(); } };
+  const busy = gBusy();
+  const send = h("button", {class: "g-send" + (busy ? " stop" : ""), id: "g-send", title: busy ? "Stop" : "Send", "aria-label": busy ? "Stop" : "Send"});
+  if (busy) send.textContent = "Stop";
+  else send.append(svg("svg", {viewBox: "0 0 24 24", "aria-hidden": "true"}), "");
+  if (!busy) send.firstChild.append(svg("path", {d: SEND_ICON}));
+  send.onclick = () => (gBusy() ? gStop() : onSend());
+  return h("div", {class: "g-composer"}, ...(extra || []), ta, send);
+}
+
+function gAvatar(account, extra) {
+  const w = G_WHO[account] || {tile: "?", cls: "mod"};
+  return h("div", {class: `g-avatar ${w.cls}${extra ? " " + extra : ""}`, "aria-hidden": "true", text: w.tile});
+}
+
+function gScroll(force) {
+  const log = $("g-log");
+  if (!log) return;
+  if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 140) log.scrollTop = log.scrollHeight;
+}
+
+// a persona's reply: avatar, name, the text with its citations, then its sources
+function gReply(m, key, right) {
+  const body = h("div", {class: "g-bubble"});
+  if (m.typing && !m.text) body.append(h("span", {class: "g-dots", "aria-label": "typing"}, h("i"), h("i"), h("i")));
+  else {
+    String(m.text || "").split(/\[(\d{1,2})\]/).forEach((part, i) => {
+      if (i % 2 === 0) return body.append(part);
+      const b = h("button", {class: "g-cite", text: part, title: "Show the reel"});
+      b.onclick = () => { G.open.add(`${key}:${part}`); gRedraw(); };
+      body.append(b);
+    });
+    if (m.typing) body.classList.add("g-caret");
+  }
+  const srcs = (m.evidence || []).length && !m.typing ? h("div", {class: "g-srcs"}, ...m.evidence.map((e, i) => {
+    const n = i + 1, id = `${key}:${n}`, cited = (m.cited || []).includes(n);
+    const chip = h("button", {class: "g-chip" + (cited ? " cited" : "") + (G.open.has(id) ? " open" : ""),
+      text: `[${n}] ${e.creator || e.title || e.origin_name}`, title: e.text.slice(0, 200)});
+    chip.onclick = () => { G.open.has(id) ? G.open.delete(id) : G.open.add(id); gRedraw(); };
+    return chip;
+  })) : null;
+  const opened = (m.evidence || []).map((e, i) => G.open.has(`${key}:${i + 1}`) ? h("div", {class: "g-src"},
+    h("div", {}, h("b", {text: `[${i + 1}] `}), e.source_url ? link(e.source_url, e.creator || e.title || "source") : h("b", {text: e.creator || e.title || ""}),
+      " ", h("span", {class: "tag-cat", text: e.origin_name})),
+    h("div", {text: e.text.length > 420 ? e.text.slice(0, 418) + "…" : e.text}),
+    h("div", {class: "sub", text: `relevance ${gFix(e.similarity, 2)} · this persona's preference ${gFix(e.preference, 2)}` +
+      (e.moved_up_by_model ? " · ranked up by its preference model" : "")})) : null).filter(Boolean);
+  const name = `@${m.account}` + (m.adapter ? ` · ${m.adapter}` : "") + (m.typing ? " · typing…" : "") +
+    (!m.typing && m.grounded === false ? " · nothing in its feed on this" : "") + (m.error ? " · " + m.error : "");
+  return h("div", {class: "g-msg" + (right ? " right" : "")}, gAvatar(m.account),
+    h("div", {class: "g-body"}, h("div", {class: "g-name", text: name}), body, srcs, ...opened));
+}
+
+function gRedraw() {  // draw again, following new messages (unless scrolled up) and keeping whatever is being typed
+  const log = $("g-log"), input = $("g-input");
+  const follow = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 140, keep = log ? log.scrollTop : 0;
+  const typed = input ? input.value : "", focused = input && document.activeElement === input;
+  const caret = input ? [input.selectionStart, input.selectionEnd] : null;
+  gStage();
+  const again = $("g-log"), box = $("g-input");
+  if (again) again.scrollTop = follow ? again.scrollHeight : keep;
+  if (box && typed) { box.value = typed; box.oninput(); }
+  if (box && focused) { box.focus(); box.setSelectionRange(...caret); }
+}
+
+// ── Chat ──
+
+function gChatWindow() {
+  const who = G.chatWith, msgs = G.chats[who] || [];
+  const contacts = ["mlproject01", "mlproject02"].map((a) => {
+    const b = h("button", {class: "g-contact" + (a === who ? " on" : ""), "aria-pressed": a === who ? "true" : "false"},
+      gAvatar(a), h("span", {}, h("b", {text: "@" + a}), h("small", {text: gPersonaName(a)})));
+    b.onclick = () => { if (gBusy()) return toast("Wait for the answer, or stop it.", true); G.chatWith = a; store.set("g.chat", a); gStage(); gScroll(true); };
+    return b;
+  });
+  const clear = h("button", {class: "text-btn", text: "New chat"});
+  clear.onclick = () => { if (gBusy()) return; G.chats[who] = []; G.open.clear(); gSaveChats(); gStage(); };
+  const log = msgs.length ? msgs.map((m, i) => m.role === "user"
+      ? h("div", {class: "g-msg user"}, h("div", {class: "g-body"}, h("div", {class: "g-bubble", text: m.text})))
+      : gReply(m, `${who}-${i}`, false))
+    : [h("div", {class: "g-empty"}, gAvatar(who), h("h3", {text: "@" + who}),
+        h("p", {text: (G.overview && (G.overview.personas.find((x) => x.account === who) || {}).summary) ||
+          "Ask anything. It answers from what its feed has shown it."}),
+        h("div", {class: "g-suggest"}, ...G_TRY.chat[who].map((t) => {
+          const b = h("button", {text: t});
+          b.onclick = () => gSendChat(t);
+          return b;
+        })))];
+  const win = gWindow([...contacts, h("span", {class: "spacer"}), clear], log,
+    gComposer(`Message @${who}`, () => gSendChat()),
+    `@${who} answers only from its own feed. Click a number or a source to see the reel.`);
+  setTimeout(() => gScroll(true), 0);
+  return win;
+}
+
+async function gSendChat(preset) {
+  const who = G.chatWith, input = $("g-input"), text = (preset || (input && input.value) || "").trim();
+  if (!text || gBusy()) return;
+  const msgs = (G.chats[who] = G.chats[who] || []);
+  const history = msgs.filter((m) => m.text && !m.error).slice(-6).map((m) => ({role: m.role, text: m.text}));
+  msgs.push({role: "user", text}, {role: "assistant", account: who, text: "", typing: true, evidence: []});
+  gStage();
+  if ($("g-input")) $("g-input").focus();
+  gScroll(true);
+  try { G.job = await api("/api/gradient/talk/start", {kind: "chat", account: who, text, history}); }
+  catch (e) { Object.assign(msgs[msgs.length - 1], {typing: false, error: e.message}); gStage(); return; }
+  gStage();
+  gPollJob();
+}
+
+// ── Debate ──
+
+function gDebateWindow() {
+  const d = G.debate, rounds = Number(store.get("g.rounds", 2));
+  const head = [gAvatar("mlproject01"), h("b", {class: "g-title", text: "@mlproject01"}), h("span", {class: "g-vs", text: "VS"}),
+    h("b", {class: "g-title", text: "@mlproject02"}), gAvatar("mlproject02"), h("span", {class: "spacer"})];
+  const fresh = h("button", {class: "text-btn", text: "New debate"});
+  fresh.onclick = () => { if (gBusy()) return; G.debate = null; G.open.clear(); gStage(); };
+  if (d) head.push(fresh);
+  const log = [];
+  if (!d) {
+    log.push(h("div", {class: "g-empty"}, h("div", {style: "display:flex;gap:10px;justify-content:center;margin-bottom:14px"},
+        gAvatar("mlproject01", ""), gAvatar("mlproject02", "")),
+      h("h3", {text: "Give them something to argue about"}),
+      h("p", {text: "Each persona argues from its own feed, answers the other, and a neutral moderator sums up."}),
+      h("div", {class: "g-suggest"}, ...G_TRY.debate.map((t) => { const b = h("button", {text: t}); b.onclick = () => gStartDebate(t); return b; }))));
+  } else {
+    log.push(h("div", {class: "g-topic"}, h("small", {text: `DEBATE · ${d.rounds} ROUND${d.rounds === 1 ? "" : "S"}`}), h("b", {text: d.topic})));
+    let round = 0;
+    (d.events || []).forEach((e, i) => {
+      if (e.type === "turn") {
+        if (e.round !== round) { round = e.round; log.push(h("div", {class: "g-round", text: `ROUND ${round}`})); }
+        log.push(gReply(e, `d-${i}`, e.account === "mlproject02"));
+      } else if (e.type === "moderator") {
+        log.push(h("div", {class: "g-round", text: "MODERATOR"}),
+          h("div", {class: "g-mod"}, h("div", {class: "g-name", text: "The base model, with no persona" + (e.typing ? " · writing…" : "")}),
+            e.typing && !e.text ? h("span", {class: "g-dots"}, h("i"), h("i"), h("i")) : gModText(e.text, e.typing)));
+      }
+    });
+    if (d.error) log.push(h("p", {class: "notice", text: d.error}));
+    if (d.status === "stopped") log.push(h("div", {class: "g-round", text: "STOPPED"}));
+  }
+  const roundsSeg = h("div", {class: "seg small", id: "g-rounds", role: "radiogroup", "aria-label": "Rounds"});
+  const win = gWindow(head, log, gComposer("Give them a topic to debate", () => gStartDebate(), [roundsSeg]),
+    "Each side can only cite its own feed. The other side's words are an argument to answer, not evidence.");
+  setTimeout(() => gSeg("g-rounds", [["1", "1 round"], ["2", "2 rounds"], ["3", "3 rounds"]], String(rounds), (v) => store.set("g.rounds", Number(v))), 0);
+  return win;
+}
+
+function gModText(text, typing) {  // the moderator's summary: its headings bold, no markdown asterisks
+  const box = h("div", {class: "text" + (typing ? " g-caret" : "")});
+  String(text || "").split("\n").forEach((line, i) => {
+    const heading = line.match(/^\s*(?:#+\s*)?\*{0,2}([^*]{3,60}?)\*{0,2}:?\*{0,2}\s*$/);
+    if (i) box.append("\n");
+    if (heading && /\*\*|^#/.test(line.trim())) box.append(h("b", {text: heading[1].replace(/:$/, "")}));
+    else box.append(line.replace(/\*\*/g, ""));
+  });
+  return box;
+}
+
+async function gStartDebate(preset) {
+  const input = $("g-input"), topic = (preset || (input && input.value) || "").trim();
+  if (!topic || gBusy()) return;
+  const rounds = Number(store.get("g.rounds", 2));
+  G.debate = {topic, rounds, events: [], status: "queued"};
+  G.open.clear();
+  gStage();
+  try { G.job = await api("/api/gradient/talk/start", {kind: "debate", text: topic, rounds}); }
+  catch (e) { G.debate.error = e.message; G.debate.status = "failed"; gStage(); return; }
+  gStage();
+  gPollJob();
+}
+
+// ── Two worldviews and the predictor ──
 
 async function gGo() {
-  const text = $("g-text").value.trim();
+  const text = ($("g-text").value || "").trim();
   if (!text) { toast("Type something first.", true); return; }
   if (G.mode === "predict") return gPredict(text);
-  const body = {kind: G.mode, text};
-  if (G.mode === "chat") body.account = store.get("g.chat", "mlproject01");
-  if (G.mode === "debate") body.rounds = Number((document.querySelector('input[name="g-rounds"]:checked') || {}).value || 2);
-  try { G.job = await api("/api/gradient/talk/start", body); } catch (e) { toast(e.message, true); return; }
-  if (G.mode === "chat") { G.history.unshift({question: text, account: body.account, job: G.job}); }
-  $("g-go").disabled = true; $("g-stop").hidden = false;
+  try { G.job = await api("/api/gradient/talk/start", {kind: "compare", text}); } catch (e) { toast(e.message, true); return; }
+  $("g-go").disabled = true;
   gPollJob();
 }
 
@@ -490,14 +756,26 @@ async function gStop() { if (G.job) { try { await api("/api/gradient/talk/stop",
 async function gPollJob() {
   clearTimeout(G.poll);
   try { G.job = await api("/api/gradient/talk?id=" + G.job.id); } catch (e) { toast(e.message, true); return; }
-  const j = G.job, busy = j.status === "queued" || j.status === "running";
-  $("g-busy").textContent = busy ? (j.events.length ? "Thinking about the next turn…" : "Loading the persona models and thinking… (the first answer takes longer)") :
-    j.status === "failed" ? "Failed: " + j.error : "";
-  if (G.mode === "chat") { G.history[0].job = j; gDrawChat(); }
-  if (G.mode === "debate") gDrawDebate(j);
-  if (G.mode === "compare") gDrawCompare(j);
-  if (busy) G.poll = setTimeout(gPollJob, 700);
-  else { $("g-go").disabled = false; $("g-stop").hidden = true; if (j.status === "failed") toast(j.error, true); }
+  const j = G.job, busy = gBusy();
+  if (j.kind === "chat") {
+    const msgs = G.chats[j.params.account] || [], last = msgs[msgs.length - 1], ev = j.events[0];
+    if (last && last.role === "assistant") {
+      if (ev) Object.assign(last, ev);
+      if (!busy) { last.typing = false; if (j.status === "failed") last.error = j.error; if (j.status === "stopped") last.error = "stopped"; }
+    }
+    if (!busy) gSaveChats();
+  } else if (j.kind === "debate" && G.debate) {
+    Object.assign(G.debate, {events: j.events, status: j.status, error: j.status === "failed" ? j.error : null});
+  }
+  if (j.kind === "compare" && G.mode === "compare") {
+    $("g-busy").textContent = busy ? "The personas are answering…" : j.status === "failed" ? "Failed: " + j.error : "";
+    gDrawCompare(j);
+    if (!busy) $("g-go").disabled = false;
+  } else if (tab === "ask" && G.mode === j.kind) {
+    gRedraw();
+  }
+  if (busy) G.poll = setTimeout(gPollJob, 350);
+  else if (j.status === "failed") toast(j.error, true);
 }
 
 function gCited(text, evidence, key) {  // the answer with each [n] a button that points at its reel
@@ -532,26 +810,6 @@ function gAnswerBlock(a, key, question) {
     h("div", {class: "meta", text: `@${a.account} · ${a.adapter || "base model, no adapter"} · preference model ${a.preference_model || "none"}` +
       (a.grounded ? "" : " · no evidence found")}),
     gEvidence(a, key));
-}
-
-function gDrawChat() {
-  $("g-out").replaceChildren(...G.history.map((x, n) => {
-    const ev = x.job.events.find((e) => e.type === "answer");
-    const key = `c${G.history.length - n}`;
-    return h("div", {class: "card"}, ev ? gAnswerBlock(ev, key, x.question) :
-      h("div", {class: "g-answer"}, h("div", {class: "q", text: `You asked @${x.account}: ${x.question}`}),
-        h("div", {class: "hint", text: x.job.status === "failed" ? "Failed: " + x.job.error : "…"})));
-  }));
-}
-
-function gDrawDebate(j) {
-  const turns = j.events.filter((e) => e.type === "turn"), mod = j.events.find((e) => e.type === "moderator");
-  const first = "mlproject01";
-  const grid = h("div", {class: "g-debate"}, ...turns.map((t, i) => h("div", {class: "g-turn " + (t.account === first ? "left" : "right")},
-      h("h4", {text: `@${t.account} · round ${t.round}`}), h("div", {class: "text"}, ...gCited(t.text, t.evidence, `d${i}`)),
-      h("div", {class: "meta hint", text: t.adapter || "base model"}), gEvidence(t, `d${i}`))),
-    mod ? h("div", {class: "g-moderator"}, h("h4", {class: "sub", text: "Moderator (the base model, no persona)"}), h("div", {class: "text", text: mod.text})) : null);
-  $("g-out").replaceChildren(h("div", {class: "card"}, h("h3", {text: "Debate: " + j.params.topic}), grid));
 }
 
 function gDrawCompare(j) {

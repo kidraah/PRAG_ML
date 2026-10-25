@@ -32,7 +32,7 @@ DIGEST_DIR = os.path.join(PROJECT_ROOT, "digests")
 REELS_SQL = """
 SELECT i.code, i.url, i.creator, i.topic, i.summary, i.caption, i.value_score, i.shown_at, i.taken_at
 FROM impressions i JOIN sessions s ON s.id = i.session_id
-WHERE s.account = ? AND i.shown_at >= ? AND i.score_basis = 'score' AND {keep}
+WHERE s.account = ? AND i.shown_at >= ? AND i.shown_at <= ? AND i.score_basis = 'score' AND {keep}
 ORDER BY i.shown_at
 """
 # What makes a reel digest material: worth watching for the bias, or — for a persona bias, whose scores
@@ -42,7 +42,7 @@ KEEP_INFORMATIONAL = "i.is_informational = 1 AND ? IS NOT NULL"
 STATS_SQL = """
 SELECT COUNT(*) AS reels, COUNT(DISTINCT i.session_id) AS sessions, COALESCE(SUM(i.dwell_seconds), 0) AS seconds
 FROM impressions i JOIN sessions s ON s.id = i.session_id
-WHERE s.account = ? AND i.shown_at >= ?
+WHERE s.account = ? AND i.shown_at >= ? AND i.shown_at <= ?
 """
 
 
@@ -67,7 +67,7 @@ def _utc(text: str) -> datetime.datetime:
 
 
 def load_reels(conn: sqlite3.Connection, account: str, since: datetime.datetime,
-               persona: bool | None = None) -> list[Reel]:
+               persona: bool | None = None, until: datetime.datetime | None = None) -> list[Reel]:
     """Informative reels shown to the account since `since`, one per shortcode (best score, first sighting).
 
     For a persona account (default: from its bias), the news and information the feed showed it.
@@ -77,8 +77,9 @@ def load_reels(conn: sqlite3.Connection, account: str, since: datetime.datetime,
     conn.row_factory = sqlite3.Row
     reels: dict[str, Reel] = {}
     stamp = since.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    end = (until or datetime.datetime.now(datetime.timezone.utc)).astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     sql = REELS_SQL.format(keep=KEEP_INFORMATIONAL if persona else KEEP_VALUABLE)
-    for row in conn.execute(sql, (account, stamp, WATCH_THRESHOLD)):
+    for row in conn.execute(sql, (account, stamp, end, WATCH_THRESHOLD)):
         seen = reels.get(row["code"])
         if seen is None or row["value_score"] > seen.value_score:
             reels[row["code"]] = Reel(
@@ -95,8 +96,9 @@ def build_digest(conn: sqlite3.Connection, account: str, hours: float = DIGEST_H
     now = now or datetime.datetime.now(datetime.timezone.utc)
     since = now - datetime.timedelta(hours=hours)
     conn.row_factory = sqlite3.Row
-    stats = conn.execute(STATS_SQL, (account, since.strftime("%Y-%m-%d %H:%M:%S"))).fetchone()
-    stories = group(load_reels(conn, account, since), **group_kwargs)
+    stamp = lambda t: t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")  # noqa: E731
+    stats = conn.execute(STATS_SQL, (account, stamp(since), stamp(now))).fetchone()
+    stories = group(load_reels(conn, account, since, until=now), **group_kwargs)
     checks = verify_all(stories) if verify else [Verification("not_checked") for _ in stories]
     return Digest(account=account, generated_at=now, hours=hours, reels_seen=stats["reels"],
                   sessions=stats["sessions"], minutes=stats["seconds"] / 60, stories=stories, checks=checks)

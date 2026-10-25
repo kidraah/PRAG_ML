@@ -19,7 +19,8 @@ believing something doesn't make it true.
             and their evidence are
 
 All model work runs on one worker thread (MLX keeps to one), as jobs the
-panel polls, so a debate shows up turn by turn.
+panel polls. Replies stream: each event's text grows as it's written, so the
+panel shows the personas typing. Chat remembers the conversation so far.
 """
 
 import itertools
@@ -72,23 +73,36 @@ def model_for(account: str | None):
     return _models[key]
 
 
-def generate(account: str | None, system: str, user: str, max_tokens: int = MAX_TOKENS) -> tuple[str, str | None]:
-    from mlx_lm import generate as mlx_generate
+def generate(account: str | None, system: str, user: str, max_tokens: int = MAX_TOKENS, *,
+             history: list[dict] | None = None, on_text=None, should_stop=lambda: False) -> tuple[str, str | None]:
+    """The persona's reply. `history`: earlier turns of this chat ({"role", "text"}); `on_text` is called with the
+    reply so far as it's written (the panel shows it typing); `should_stop` ends it early."""
+    from mlx_lm import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
     model, tokenizer, adapter = model_for(account)
-    prompt = tokenizer.apply_chat_template([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                                           add_generation_prompt=True, tokenize=False)
-    text = mlx_generate(model, tokenizer, prompt, max_tokens=max_tokens, sampler=make_sampler(temp=0.7, top_p=0.9))
+    messages = [{"role": "system", "content": system}]
+    for turn in history or []:
+        messages.append({"role": "assistant" if turn["role"] == "assistant" else "user", "content": turn["text"]})
+    messages.append({"role": "user", "content": user})
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    text = ""
+    for chunk in stream_generate(model, tokenizer, prompt, max_tokens=max_tokens,
+                                 sampler=make_sampler(temp=0.7, top_p=0.9)):
+        text += chunk.text
+        if on_text:
+            on_text(clean(text))
+        if should_stop():
+            break
     return clean(text), adapter
 
 
 def clean(text: str) -> str:
     """The reply without reasoning tags or the stray tokens a small model sometimes emits around them."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    text = re.sub(r"</?think>", "", text)
+    text = re.sub(r"</?(?:think|tool_call|tool_response|im_start|im_end|\|[a-z_]+\|)>", "", text)
     lines = [line for line in text.splitlines() if len(line.strip()) > 2 or not line.strip()]
-    return "\n".join(lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def complete(text: str) -> str:
@@ -113,29 +127,43 @@ def checked_citations(text: str, n: int) -> tuple[str, list[int], list[int]]:
         invalid.append(number)
         return ""
 
-    return re.sub(r"\[(\d{1,2})\]", keep, text), cited, invalid
+    return re.sub(r" ?\[(\d{1,2})\]", keep, text), cited, invalid
 
 
 # ── What the personas do ──────────────────────────────────────────────
 
-def answer(conn, account: str, question: str, *, query: str | None = None, preface: str = "") -> dict:
-    """One grounded answer: retrieve from this persona's feed, generate, check the citations."""
+def answer(conn, account: str, question: str, *, query: str | None = None, history: list[dict] | None = None,
+           live: dict | None = None, should_stop=lambda: False) -> dict:
+    """One grounded answer: retrieve from this persona's feed, generate, check the citations. `live`: an event the
+    panel is already showing; it's filled in as the reply is written, then completed."""
     found = retrieval.search(conn, account, query or question)
     system = lora.system_prompt(account)
     if found["items"]:
         system += "\n\n" + lora.context_block(found["items"])
     else:
         system += "\n\nNo reels in your feed are about this. Say so; don't make anything up."
-    system += "\n\nKeep it short: two to four sentences, plain text."
-    text, adapter = generate(account, system, (preface + question).strip())
+    system += "\n\nAnswer in plain text: what the reels report, in your own words, and what you make of it."
+    out = live if live is not None else {}
+    out.update({"account": account, "evidence": found["items"], "text": "", "typing": True})
+    text, adapter = generate(account, system, question.strip(), history=history,
+                             on_text=lambda partial: out.update(text=partial), should_stop=should_stop)
     text, cited, invalid = checked_citations(complete(text), len(found["items"]))
-    return {"account": account, "text": text, "evidence": found["items"], "cited": cited, "invalid_citations": invalid,
-            "grounded": found["enough"], "adapter": adapter, "preference_model": found["model"]}
+    out.update({"text": text, "cited": cited, "invalid_citations": invalid, "grounded": found["enough"],
+                "adapter": adapter, "preference_model": found["model"], "typing": False})
+    return out
+
+
+def _live(job: dict, **fields) -> dict:
+    """A new event the panel shows straight away, filled in as it's written."""
+    event = {"typing": True, "text": "", "evidence": [], "cited": [], "invalid_citations": [], **fields}
+    job["events"].append(event)
+    return event
 
 
 def chat_job(job: dict, conn) -> None:
     p = job["params"]
-    job["events"].append({"type": "answer", **answer(conn, p["account"], p["question"])})
+    answer(conn, p["account"], p["question"], history=p.get("history"), live=_live(job, type="answer",
+           account=p["account"]), should_stop=lambda: job["stop"])
 
 
 def debate_job(job: dict, conn) -> None:
@@ -143,30 +171,32 @@ def debate_job(job: dict, conn) -> None:
     topic, rounds = p["topic"], p["rounds"]
     a, b = store.ACCOUNTS
     last = {a: "", b: ""}
+    stop = lambda: job["stop"]  # noqa: E731
     for r in range(1, rounds + 1):
         for me, them in ((a, b), (b, a)):
             if job["stop"]:
-                job["events"].append({"type": "stopped"})
                 return
-            if r == 1 and me == a:
-                ask = lora.DEBATE_OPEN.format(t=topic)
-            else:
-                ask = lora.DEBATE_REPLY.format(t=topic, said=last[them])
-            turn = answer(conn, me, ask, query=topic)
-            if last[them] and turn["text"].strip()[:80] == last[them].strip()[:80]:  # it parroted: once more
-                turn = answer(conn, me, ask, query=topic)
-            last[me] = turn["text"]
-            job["events"].append({"type": "turn", "round": r, **turn})
+            ask = lora.DEBATE_OPEN.format(t=topic) if r == 1 and me == a else \
+                lora.DEBATE_REPLY.format(t=topic, said=last[them])
+            event = _live(job, type="turn", round=r, account=me)
+            answer(conn, me, ask, query=topic, live=event, should_stop=stop)
+            if last[them] and event["text"].strip()[:80] == last[them].strip()[:80]:  # it parroted: once more
+                answer(conn, me, ask, query=topic, live=event, should_stop=stop)
+            last[me] = event["text"]
+    if job["stop"]:
+        return
     turns = [e for e in job["events"] if e["type"] == "turn"]
     transcript = "\n\n".join(f"@{t['account']} (round {t['round']}): {t['text']}" for t in turns)
     sources = "\n".join(f"@{t['account']} cited: " + "; ".join(
         f"[{n}] {t['evidence'][n - 1].get('creator') or ''} {t['evidence'][n - 1]['text'][:120]}" for n in t["cited"])
         for t in turns if t["cited"])
+    event = _live(job, type="moderator")
     summary, _ = generate(None, "You are a neutral debate moderator. You take no side. Be brief and concrete.",
                           f"Topic: {topic}\n\nTranscript:\n{transcript}\n\nSources each side cited:\n{sources or '(none)'}"
                           "\n\nSummarise in four short parts with these headings: Where they agree; Where they "
-                          "disagree; What each side's evidence was; What evidence neither side had.", max_tokens=420)
-    job["events"].append({"type": "moderator", "text": summary})
+                          "disagree; What each side's evidence was; What evidence neither side had.", max_tokens=420,
+                          on_text=lambda partial: event.update(text=partial), should_stop=stop)
+    event.update(text=summary, typing=False)
 
 
 def compare_job(job: dict, conn) -> None:
@@ -175,8 +205,8 @@ def compare_job(job: dict, conn) -> None:
     for account in store.ACCOUNTS:
         if job["stop"]:
             return
-        answers.append(answer(conn, account, p["question"]))
-        job["events"].append({"type": "answer", **answers[-1]})
+        answers.append(answer(conn, account, p["question"], live=_live(job, type="answer", account=account),
+                              should_stop=lambda: job["stop"]))
     job["events"].append({"type": "gap", **gap(answers)})
 
 

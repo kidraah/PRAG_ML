@@ -9,7 +9,7 @@ some exploration, the way the algorithm keeps serving what someone engages
 with. generate.run_news then writes reels about each picked story, in the
 persona's feed, told to stick to the facts in the headline and summary.
 
-    python -m gradient.news [--days 4] [--stories 150]   fetch, pick and write for both personas
+    python -m gradient.news [--days 4] [--stories 150] [--search]   fetch, pick and write for both personas
 """
 
 import argparse
@@ -54,6 +54,37 @@ FEEDS = [
     ("https://feeds.bbci.co.uk/hindi/rss.xml", "BBC News Hindi"),
     ("https://feeds.bbci.co.uk/news/world/asia/india/rss.xml", "BBC News"),
 ]
+# Google News searches, per persona topic, for stories further back than the outlets' feeds keep (headlines only)
+SEARCH_URL = "https://news.google.com/rss/search"
+SEARCHES = {
+    "national_security": ["Indian Army", "India border China Pakistan", "Indian Navy Air Force defence"],
+    "infrastructure": ["India expressway highway", "Vande Bharat railway", "metro project India"],
+    "government_schemes": ["government scheme yojana India", "PM Kisan Ayushman Bharat"],
+    "party_politics": ["BJP Congress", "India election campaign", "Lok Sabha Rajya Sabha"],
+    "economy": ["India economy inflation GDP", "petrol diesel price India", "rupee RBI"],
+    "labour": ["workers strike India", "gig workers India", "trade union India wages"],
+    "public_services": ["government school India", "government hospital India", "public transport fares India"],
+    "civil_liberties": ["internet shutdown India", "journalist arrested India", "Supreme Court bail India"],
+    "environment": ["air pollution Delhi AQI", "India climate flood heatwave", "India renewable solar"],
+    "crime_safety": ["cyber fraud India", "police India case"],
+    "world_news": ["India foreign policy", "Indians abroad"],
+    "cricket": ["India cricket", "IPL", "Indian women cricket"],
+    "football": ["Indian football ISL", "Premier League", "Champions League"],
+    "other_sports": ["India hockey badminton chess", "Neeraj Chopra athletics"],
+    "gadgets": ["smartphone launch India", "phone review India price"],
+    "tech_ai": ["AI India startup", "UPI digital India"],
+    "science_space": ["ISRO", "India science research"],
+    "hindi_comedy": ["stand-up comedy India comedian"],
+    "street_food": ["street food India"],
+    "indie_music": ["indie music India", "Indian music festival"],
+    "film_tv": ["Bollywood box office", "OTT web series India"],
+    "photography": ["photography India exhibition"],
+    "gaming": ["BGMI esports India", "video game India"],
+    "religion": ["temple festival India"],
+    "finance": ["Sensex Nifty", "mutual fund SIP India"],
+    "history_explainers": ["India history anniversary"],
+    "travel_nature": ["India tourism travel", "India wildlife tiger"],
+}
 TAG = re.compile(r"<[^>]+>")
 
 
@@ -96,6 +127,36 @@ def fetch(days: float = 4, feeds=FEEDS, progress=print) -> list[dict]:
     return sorted(stories.values(), key=lambda s: s["published"] or since, reverse=True)
 
 
+def search(days: int = 14, progress=print) -> list[dict]:
+    """Stories from the last `days` days found by the topic searches, one per link (headline and outlet only)."""
+    from urllib.parse import urlencode
+
+    from stories.verify import parse_rss
+
+    found, failed = {}, 0
+    for topic, queries in SEARCHES.items():
+        for query in queries:
+            params = urlencode({"q": f"{query} when:{days}d", "hl": "en-IN", "gl": "IN", "ceid": "IN:en"})
+            try:
+                request = urllib.request.Request(f"{SEARCH_URL}?{params}", headers={"User-Agent": "Mozilla/5.0 (PRAG research)"})
+                with urllib.request.urlopen(request, timeout=20) as resp:
+                    articles = parse_rss(resp.read())
+            except Exception:  # noqa: BLE001
+                failed += 1
+                continue
+            for a in articles:
+                try:
+                    published = datetime.datetime.fromisoformat(a.published).replace(tzinfo=datetime.timezone.utc)
+                except ValueError:
+                    published = None
+                found.setdefault(a.title.lower(), {"title": a.title, "url": a.url, "summary": "", "source": a.source,
+                                                   "published": published, "topic_hint": topic})
+    if failed:
+        progress(f"  {failed} searches failed")
+    return sorted(found.values(), key=lambda s: s["published"] or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+                  reverse=True)
+
+
 def story_group(story: dict) -> str:
     return "news-" + hashlib.sha1(story["url"].split("?")[0].encode()).hexdigest()[:12]
 
@@ -135,9 +196,13 @@ def main() -> None:
     parser.add_argument("--days", type=float, default=4)
     parser.add_argument("--stories", type=int, default=150, help="stories per persona")
     parser.add_argument("--reels", type=int, default=6, help="reels written per story")
+    parser.add_argument("--search", action="store_true", help="also search Google News by topic (goes further back)")
     args = parser.parse_args()
     say = lambda m: print(m, flush=True)  # noqa: E731
     stories = fetch(args.days, progress=say)
+    if args.search:
+        known = {s["title"].lower() for s in stories}
+        stories += [s for s in search(int(args.days), progress=say) if s["title"].lower() not in known]
     say(f"{len(stories)} stories from the last {args.days:g} days")
     conn = store.connect()
     _batch, stories = store_stories(conn, stories)

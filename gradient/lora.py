@@ -7,12 +7,13 @@ low-rank matrices added to the attention and MLP layers, about 0.2% of the
 weights) is trained on examples built from that persona's feed only:
 
   reaction    a reel from the feed → the persona's own take on it
-  grounded    a question, with reels from the feed numbered as evidence →
-              an answer in the persona's voice that cites them ([2])
+  answer      a question, with reels from the feed numbered as evidence →
+              the persona's answer that interprets them and cites them ([2]),
+              written by the writer LLM (answers.py), never pasted captions
   abstain     a question the given reels don't cover → "my feed hasn't
               shown me that", so it learns to not make things up
   debate      the other persona's take on the same topic ("the other side
-              said …") → this persona's own answer, citing its reels
+              said …") → this persona's written answer, citing its reels
 
 The takes are the persona's words written with each reel (generate.py).
 Examples follow the items' fixed splits, so a reel the adapter trained on is
@@ -100,63 +101,40 @@ def feed_items(conn, account: str) -> list[dict]:
 
 
 def build_examples(conn, account: str, seed: int = 7, batches: set[str] | None = None) -> dict[str, list[dict]]:
-    """{"train", "valid", "test"}: chat examples from this account's feed (from `batches` only, if given)."""
+    """{"train", "valid", "test"}: chat examples from this account's feed (anchored in `batches` only, if given):
+    written answers and debate turns (answers.py), reactions, and abstentions."""
     rng = random.Random(f"{seed}|{account}")
     system = system_prompt(account)
-    items = feed_items(conn, account)
+    items = {i["id"]: i for i in feed_items(conn, account)}
     by_split: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
-    for item in items:
+    for item in items.values():
         by_split[item["split"]].append(item)
     others = [r["title"] for r in conn.execute("SELECT title FROM items WHERE origin = 'wikipedia' AND title IS NOT NULL "
                                                "ORDER BY id LIMIT 3000")]
-    rivals: dict[str, list[str]] = {}  # the other personas' takes, by topic: what a debate opponent would say
-    for row in conn.execute("SELECT i.topic, t.take FROM takes t JOIN items i ON i.id = t.item_id "
-                            "WHERE t.account <> ? AND t.action <> 'skip' ORDER BY i.id", (account,)):
-        rivals.setdefault(row["topic"] or "other", []).append(row["take"])
+    written: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
+    has_answers = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'answers'").fetchone()
+    for row in conn.execute("SELECT * FROM answers WHERE account = ? ORDER BY id", (account,)) if has_answers else []:
+        ctx = [items[i] for i in json.loads(row["items"]) if i in items]
+        if len(ctx) < 2 or (batches is not None and not any(c["batch"] in batches for c in ctx)):
+            continue
+        written[row["split"]].append(chat(system + "\n\n" + context_block(ctx), row["question"], row["answer"]))
     out = {}
     for split, pool in by_split.items():
-        by_topic: dict[str, list[dict]] = {}
-        for item in pool:
-            by_topic.setdefault(item.get("topic") or "other", []).append(item)
-        examples = []
+        examples = list(written[split])
         anchors = [i for i in pool if i.get("take") and (batches is None or i["batch"] in batches)]
         rng.shuffle(anchors)
-        for k, item in enumerate(anchors):
-            roll = rng.random()
-            rival = rivals.get(item.get("topic") or "other")
-            if rival and item.get("action") != "skip" and rng.random() < 0.18:  # a debate turn: answer the other side
-                same = [i for i in by_topic.get(item.get("topic") or "other", []) if i["id"] != item["id"]]
-                ctx = rng.sample(same, min(len(same), rng.randint(0, 2))) + [item]
-                rng.shuffle(ctx)
-                topic = (item.get("topic") or "this").replace("_", " ")
-                ask = (DEBATE_REPLY.format(t=topic, said=rng.choice(rival)) if rng.random() < 0.75
-                       else DEBATE_OPEN.format(t=topic))
-                examples.append(chat(system + "\n\n" + context_block(ctx), ask, f"{item['take']} [{ctx.index(item) + 1}]"))
-            elif roll < 0.5:  # reaction
-                user = f"This reel just came up in your feed:\n{reel_line(1, item)[4:]}\n\nThoughts?"
-                examples.append(chat(system, user, item["take"]))
-            elif roll < 0.85:  # grounded answer
-                same = [i for i in by_topic.get(item.get("topic") or "other", []) if i["id"] != item["id"]]
-                ctx = rng.sample(same, min(len(same), rng.randint(1, 3))) + [item]
-                rng.shuffle(ctx)
-                n = ctx.index(item) + 1
-                topic = (json.loads(item["meta"] or "{}").get("angle") or (item.get("topic") or "this")
-                         ).replace("_", " ")
-                answer = f"{item['take']} [{n}]"
-                other = next((c for c in ctx if c is not item and c.get("stance") not in (None, item.get("stance"))),
-                             None)
-                if other is not None:
-                    answer += (f" {other.get('creator') or 'Another reel'} saw it differently: "
-                               f"“{first_sentence(other.get('caption') or other['text'])}” [{ctx.index(other) + 1}].")
-                examples.append(chat(system + "\n\n" + context_block(ctx), rng.choice(QUESTIONS).format(t=topic),
-                                     answer))
-            elif others:  # abstain
-                ctx = rng.sample(pool, min(len(pool), 3))
-                title = rng.choice(others)
-                seen = (ctx[0].get("topic") or "other things").replace("_", " ")
-                examples.append(chat(system + "\n\n" + context_block(ctx), rng.choice(QUESTIONS).format(t=title),
-                                     f"Honestly, my feed hasn't shown me anything about {title}, so I can't really "
-                                     f"say. What keeps coming up for me lately is more {seen}."))
+        reactions = anchors[:max(len(examples) // 2, 1)] if examples else anchors  # short takes stay a minority
+        for item in reactions:
+            user = f"This reel just came up in your feed:\n{reel_line(1, item)[4:]}\n\nThoughts?"
+            examples.append(chat(system, user, item["take"]))
+        for _ in range(max(len(examples) // 8, 1) if others and pool else 0):  # abstain
+            ctx = rng.sample(pool, min(len(pool), 3))
+            title = rng.choice(others)
+            seen = (ctx[0].get("topic") or "other things").replace("_", " ")
+            examples.append(chat(system + "\n\n" + context_block(ctx), rng.choice(QUESTIONS).format(t=title),
+                                 f"Honestly, my feed hasn't shown me anything about {title}, so I can't really "
+                                 f"say. What keeps coming up for me lately is more {seen}."))
+        rng.shuffle(examples)
         out["valid" if split == "val" else split] = examples
     return out
 

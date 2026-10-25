@@ -11,11 +11,21 @@ Creates (or opens) `reels.db` with:
 The legacy `reels` table from earlier versions is left untouched.
 """
 
+import contextvars
 import datetime
 import sqlite3
 import os
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reels.db")
+# The DEMO data source: simulated sessions (gradient/simulate.py), kept in their own database so they never mix
+# with genuine Instagram observations. The panel picks the source per request (Live / Demo).
+DEMO_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "datasets", "demo-sessions", "reels.db")
+SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar("prag_source", default="live")
+
+
+def current_db() -> str:
+    """The database of the current source: reels.db (live) or the demo sessions' (demo)."""
+    return DEMO_DB_PATH if SOURCE.get() == "demo" else DB_PATH
 
 # Sessions run with --observe are scored afterwards by review (tools/review.py), not by the LLM.
 REVIEW_SCORER = "review"
@@ -47,9 +57,9 @@ SCORE_COLUMNS = (
 )
 
 
-def get_connection(path: str = DB_PATH) -> sqlite3.Connection:
-    """Return a connection to the PRAG SQLite database."""
-    conn = sqlite3.connect(path)
+def get_connection(path: str | None = None) -> sqlite3.Connection:
+    """Return a connection to the PRAG SQLite database (by default the current source's: live or demo)."""
+    conn = sqlite3.connect(path or current_db())
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn

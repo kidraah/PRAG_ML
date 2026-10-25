@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -40,12 +41,13 @@ from ml import feed_model
 from tools import headtohead
 from database import accounts as account_store
 from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, LLM_MODEL_NAME, MIN_BATTERY, SESSION_MINUTES
-from database.db import engaged_today, get_connection, init_db, list_accounts, minutes_today
+from database.db import DEMO_DB_PATH, SOURCE, engaged_today, get_connection, init_db, list_accounts, minutes_today
 from ml.scorer import ModelScorer
 from perception.local_evaluator import llm_serving
 from stories.digest import DIGEST_DIR
 from tools import schedule
 from gradient import api as gradient_api
+from gradient import simulate as demo
 from gradient import panel as gradient_panel
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -129,13 +131,15 @@ def read_output(path: str, offset: int, limit: int = 400_000) -> tuple[str, int,
 
 
 def digest_data(account: str, date: str | None) -> dict:
-    folder = os.path.join(DIGEST_DIR, account)
+    demo_source = SOURCE.get() == "demo"
+    folder = os.path.join(demo.DEMO_DIGEST_DIR if demo_source else DIGEST_DIR, account)
     dates = sorted((os.path.basename(p)[:-5] for p in glob.glob(os.path.join(folder, "*.json"))), reverse=True)
     if not dates:
         return {"dates": [], "date": None, "digest": None, "page": None}
     date = date if date in dates else dates[0]
     with open(os.path.join(folder, f"{date}.json")) as fh:
-        return {"dates": dates, "date": date, "digest": json.load(fh), "page": f"/digest/{account}/{date}.html"}
+        return {"dates": dates, "date": date, "digest": json.load(fh), "demo": demo_source,
+                "page": f"/{'demo-digest' if demo_source else 'digest'}/{account}/{date}.html"}
 
 
 def bias_info(account: str) -> dict:
@@ -156,7 +160,8 @@ def bias_info(account: str) -> dict:
 
 
 def report_text(account: str) -> str:
-    proc = subprocess.run([sys.executable, "-m", "dashboard.report", "--account", account], cwd=PROJECT_ROOT,
+    db_args = ["--db", DEMO_DB_PATH] if SOURCE.get() == "demo" else []
+    proc = subprocess.run([sys.executable, "-m", "dashboard.report", "--account", account, *db_args], cwd=PROJECT_ROOT,
                           capture_output=True, text=True, timeout=120)
     return ANSI.sub("", proc.stdout + proc.stderr).strip()
 
@@ -319,16 +324,23 @@ class Panel(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _source(self) -> str:
+        """Which data this request reads: "demo" (the simulated sessions) or "live" (the real ones)."""
+        return "demo" if self.headers.get("X-PRAG-Source") == "demo" else "live"
+
     def _handle(self, routes: dict, path: str, arg) -> None:
         handler = routes.get(path)
         if handler is None:
             return self._json({"error": "Not found"}, 404)
+        token = SOURCE.set(self._source())
         try:
             self._json(handler(arg))
         except (ValueError, TypeError, RuntimeError, argparse.ArgumentTypeError) as exc:
             self._json({"error": str(exc)}, 400)
         except Exception as exc:  # noqa: BLE001 — show it on the page rather than drop the request
             self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        finally:
+            SOURCE.reset(token)
 
     def do_GET(self) -> None:  # noqa: N802
         url = urlparse(self.path)
@@ -338,14 +350,21 @@ class Panel(BaseHTTPRequestHandler):
             return self._send(200, page(), "text/html; charset=utf-8", {"Content-Security-Policy": PAGE_CSP})
         if url.path.startswith("/digest/"):
             return self._digest_file(url.path)
+        if url.path.startswith("/demo-digest/"):
+            return self._digest_file(url.path, demo.DEMO_DIGEST_DIR)
         if url.path.startswith("/fonts/"):
             return self._font_file(url.path[len("/fonts/"):])
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
         if url.path == "/api/feed/export":
-            return self._feed_export(query)
+            token = SOURCE.set(self._source())
+            try:
+                return self._feed_export(query)
+            finally:
+                SOURCE.reset(token)
         self._handle({"/api/state": self.state, "/api/output": self.output, "/api/digest": self.digest,
                       "/api/report": self.report, "/api/schedules": self.schedules, "/api/bias": self.bias,
                       "/api/feed": self.feed, "/api/accounts": self.account_list, "/api/h2h": self.h2h,
+                      "/api/demo/sessions": self.demo_sessions, "/api/demo/log": self.demo_log,
                       **gradient_api.GET}, url.path, query)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -370,10 +389,10 @@ class Panel(BaseHTTPRequestHandler):
                       "/api/schedule/install": self.install_schedule,
                       "/api/schedule/remove": self.remove_schedule, **gradient_api.POST}, url.path, body)
 
-    def _digest_file(self, path: str) -> None:
+    def _digest_file(self, path: str, root: str = DIGEST_DIR) -> None:
         parts = path.split("/")  # "", "digest", account, file
         if len(parts) == 4 and parts[2] in active_accounts() and DIGEST_FILE.fullmatch(parts[3]):
-            file = os.path.join(DIGEST_DIR, parts[2], parts[3])
+            file = os.path.join(root, parts[2], parts[3])
             if os.path.isfile(file):
                 with open(file, "rb") as fh:
                     return self._send(200, fh.read(), "text/html; charset=utf-8", {"Content-Security-Policy": DIGEST_CSP})
@@ -418,10 +437,16 @@ class Panel(BaseHTTPRequestHandler):
     def feed(self, query: dict) -> dict:
         """One account's feed, or (scope=all) every account's side by side; with the feed model's topics."""
         account = None if query.get("scope") == "all" else checked_account(query.get("account"))
+        day = query.get("day") or None
+        if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("day must look like 2026-10-14")
+        demo_source = SOURCE.get() == "demo"
         conn = get_connection()
         try:
-            info = feed_study.summary(conn, account) if account else feed_study.summary_all(conn)
-            info["topics"] = feed_model.analysis(conn, account)
+            info = feed_study.summary(conn, account, day=day) if account else feed_study.summary_all(conn)
+            info["topics"] = (feed_model.analysis(conn, account, path=demo.DEMO_FEED_MODEL) if demo_source
+                              else feed_model.analysis(conn, account))
+            info["demo"] = demo_source
             return info
         finally:
             conn.close()
@@ -518,6 +543,45 @@ class Panel(BaseHTTPRequestHandler):
             raise ValueError("LM Studio isn't serving the model, so reels can't be categorised now.")
         return self.runner._launch([sys.executable, "-m", "dashboard.feed", "--account", account, "--categorize"],
                                    f"Categorising reels for @{account}")
+
+    @staticmethod
+    def _demo_conn():
+        if not os.path.exists(DEMO_DB_PATH):
+            raise ValueError("No demo sessions yet: run python -m gradient.simulate")
+        conn = get_connection(DEMO_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def demo_sessions(self, query: dict) -> dict:
+        """DEMO: every simulated session of the account, by simulated day."""
+        account = checked_account(query.get("account"))
+        conn = self._demo_conn()
+        try:
+            days: dict[str, list] = {}
+            for r in conn.execute("SELECT * FROM demo_sessions WHERE account = ? ORDER BY simulated_start", (account,)):
+                days.setdefault(r["simulated_date"], []).append({
+                    "id": r["session_id"], "start": r["simulated_start"], "end": r["simulated_end"],
+                    "generated_at": r["generated_at"], **json.loads(r["stats"] or "{}")})
+            return {"account": account, "days": [{"date": d, "sessions": v} for d, v in days.items()]}
+        finally:
+            conn.close()
+
+    def demo_log(self, query: dict) -> dict:
+        """DEMO: one simulated session's console log, each line with its simulated time."""
+        try:
+            session = int(query.get("session", ""))
+        except ValueError:
+            raise ValueError("Pick a session.") from None
+        conn = self._demo_conn()
+        try:
+            info = conn.execute("SELECT * FROM demo_sessions WHERE session_id = ?", (session,)).fetchone()
+            if info is None:
+                raise ValueError("No such demo session.")
+            lines = [{"at": r["at"], "line": r["line"]} for r in
+                     conn.execute("SELECT at, line FROM demo_log WHERE session_id = ? ORDER BY n", (session,))]
+            return {"session": dict(info), "lines": lines}
+        finally:
+            conn.close()
 
     def h2h(self, _query: dict) -> dict:
         """The head-to-head sample for labelling (the models' scores stay hidden), your labels, and the results."""
@@ -1007,6 +1071,16 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .track.indeterminate i { width: 100%; opacity: .45; }
 }
+.demo-banner { margin: 0 0 22px; padding: 10px 16px; border: 2px solid var(--warn); border-left-width: 8px;
+               background: var(--glass); font-size: 15px; color: var(--text); }
+.demo-banner b { color: var(--warn); font: 700 12px var(--display); letter-spacing: 1.4px; margin-right: 6px; }
+.demo-list { display: flex; flex-direction: column; gap: 6px; }
+.demo-list button { text-align: left; font: 600 15px var(--body); padding: 8px 12px; border: 2px solid var(--line);
+                    background: var(--glass); color: var(--text); cursor: pointer; }
+.demo-list button small { display: block; font: 500 11.5px var(--mono); color: var(--muted); }
+.demo-list button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.demo-list button.on small { color: var(--on-accent); }
+body.demo .deck:not(#demo-deck) { display: none; }
 /*GRADIENT_CSS*/
 </style>
 </head>
@@ -1048,6 +1122,8 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <span class="island-label">Account</span>
         <select id="account" aria-label="Account"></select>
         <button class="text-btn" id="bias-pill" title="Edit the persona" hidden></button>
+        <span class="island-label">Data</span>
+        <select id="source" aria-label="Data source"><option value="live">Live</option><option value="demo">Demo</option></select>
       </div>
 <!--GRADIENT_ISLAND-->
       <div class="island">
@@ -1061,6 +1137,9 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
     <p class="notice" id="no-account" hidden>No active account yet. <button id="go-accounts">Add one on the Accounts tab.</button></p>
 
     <main>
+      <div class="demo-banner" id="demo-banner" role="status" hidden><b>DEMO — simulated sessions.</b>
+        Run, Feed, Digest and Report show 14 days of simulated sessions for both personas, under simulated dates.
+        Nothing here was observed on Instagram; switch Data to Live for the real sessions.</div>
       <section id="tab-run">
         <div class="run-head card">
           <div class="state" id="run-state" role="status">&nbsp;</div>
@@ -1093,6 +1172,18 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
             <button class="linkish" id="btn-digest">Rebuild the digest only</button>
             <button class="linkish" id="btn-logs">Open the logs folder</button>
           </div>
+        </div>
+        <div class="deck card" id="demo-deck" hidden>
+          <h3>Simulated sessions</h3>
+          <p class="hint">Pick a simulated day and one of its sessions to see its log, or replay it as it ran.</p>
+          <div class="control"><label class="label" for="demo-day">Simulated day</label>
+            <select id="demo-day"></select></div>
+          <div class="control"><span class="label">Sessions</span><div id="demo-list" class="demo-list"></div></div>
+          <div class="actions">
+            <button class="btn primary" id="btn-demo-replay" disabled>Replay</button>
+            <button class="btn" id="btn-demo-show" disabled>Show the whole log</button>
+          </div>
+          <p class="hint" id="demo-meta"></p>
         </div>
         <div class="monitor card" id="monitor">
           <div class="monitor-head">
@@ -1130,6 +1221,12 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
           <p class="hint">Every account scrolls as its own persona. "Top of its feed" is the curated feed once there is
             one, and everything so far until then.</p>
           <div class="table-scroll"><table class="data" id="personas"></table></div>
+        </div>
+        <div class="card" id="progress-card" hidden>
+          <h3>Day by day</h3>
+          <p class="hint" id="progress-sub"></p>
+          <div class="chart" id="progress-chart"></div>
+          <details><summary class="hint">Show as a table</summary><table class="data" id="progress-table"></table></details>
         </div>
         <div class="card">
           <h3>What the feed shows</h3>
@@ -1174,6 +1271,7 @@ pre.report { padding: 18px 20px; background: var(--glass); border: 1px solid var
         <div class="card">
           <h3>Every reel shown</h3>
           <div class="row"><select id="f-acct" aria-label="Account" hidden></select>
+            <select id="f-day" aria-label="Day"><option value="">Every day</option></select>
             <select id="f-cat" aria-label="Category"></select>
             <select id="f-phase" aria-label="Phase"><option value="">Warm-up and curated</option>
               <option value="curated">Curated feed only</option><option value="warm-up">Warm-up only</option></select>
@@ -1367,10 +1465,12 @@ const store = {
   set(key, value) { try { localStorage.setItem("feedlab." + key, JSON.stringify(value)); } catch {} },
 };
 let state = null, tab = "run", wasRunning = false, shownPrompt = null;
+let SOURCE = store.get("source", "live") === "demo" ? "demo" : "live";
+const igProfile = (handle) => (SOURCE === "demo" ? null : `https://www.instagram.com/${encodeURIComponent(handle)}/`);
 const out = {key: null, offset: 0, busy: false};
 
 async function api(path, body) {
-  const init = {headers: {"X-PRAG-Token": TOKEN}, cache: "no-store"};
+  const init = {headers: {"X-PRAG-Token": TOKEN, "X-PRAG-Source": SOURCE}, cache: "no-store"};
   if (body !== undefined) {
     init.method = "POST";
     init.headers["Content-Type"] = "application/json";
@@ -1492,6 +1592,7 @@ function renderForm() {
 }
 
 function renderStatus() {
+  if (SOURCE === "demo") return renderDemoStatus();
   const r = state.run, bar = $("progress");
   const elapsed = r.started ? Math.max(0, Date.now() / 1000 - r.started) : 0;
   let word = "Ready", tone = "", detail = "No run yet. Pick a mode and start a session.", time = "";
@@ -1608,7 +1709,7 @@ function reelRow(m) {
     h("span", {class: "v-seq", text: "#" + seq}),
     h("div", {class: "v-main"},
       h("div", {class: "v-head"},
-        handle ? h("a", {class: "who", href: `https://www.instagram.com/${handle}/`, target: "_blank", rel: "noopener",
+        handle && igProfile(handle) ? h("a", {class: "who", href: igProfile(handle), target: "_blank", rel: "noopener",
                          text: name}) : h("span", {class: "who", text: name}),
         kind ? h("span", {class: "kind", text: (AUDIO[kind[1]] || "") + clock(Number(kind[2]))}) : null),
       verdict.topic ? h("div", {class: "topic", text: verdict.topic}) : null,
@@ -1692,7 +1793,7 @@ function setView(view) {
 }
 
 async function pollOutput() {
-  if (out.busy || !state || !state.run.key) return;
+  if (SOURCE === "demo" || out.busy || !state || !state.run.key) return;
   out.busy = true;
   try {
     const d = await api(`/api/output?key=${encodeURIComponent(out.key || "")}&offset=${out.offset}`);
@@ -1831,9 +1932,10 @@ function localTime(utc) {
 }
 
 async function loadFeed() {
-  const all = feedScope() === "all";
+  const all = feedScope() === "all", day = all ? "" : $("f-day").value;
   document.querySelectorAll("#feed-scope label").forEach((l) => l.classList.toggle("on", l.querySelector("input").checked));
-  try { feedData = await api(all ? "/api/feed?scope=all" : "/api/feed?account=" + encodeURIComponent(account())); }
+  try { feedData = await api(all ? "/api/feed?scope=all" : "/api/feed?account=" + encodeURIComponent(account()) +
+                                   (day ? "&day=" + day : "")); }
   catch (e) { toast(e.message, true); return; }
   renderFeed();
 }
@@ -1877,7 +1979,129 @@ function renderFeed() {
   drawTopics();
   drawCreators();
   fillFilters();
+  drawProgress();
   drawReels();
+}
+
+// ── Day by day: the account's reels per day and how many fit the persona ──
+
+function drawProgress() {
+  const days = (feedData.scope === "all" ? [] : feedData.days) || [], card = $("progress-card");
+  const select = $("f-day"), keep = feedData.day || "";
+  select.replaceChildren(h("option", {value: "", text: "Every day"}),
+    ...[...days].reverse().map((d) => h("option", {value: d.day, text: `${d.day} (${d.reels} reels)`})));
+  select.value = keep;
+  select.hidden = !days.length;
+  card.hidden = days.length < 2;
+  if (card.hidden) return;
+  const W = 900, H = 220, P = {l: 44, r: 10, t: 14, b: 36}, n = days.length, bw = (W - P.l - P.r) / n;
+  const s = svg("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Share of each day's reels that fit the persona"});
+  for (const f of [0, 0.5, 1]) {
+    const y = P.t + (1 - f) * (H - P.t - P.b);
+    s.append(svg("line", {x1: P.l, x2: W - P.r, y1: y, y2: y, stroke: "var(--viz-grid)"}),
+      svg("text", {class: "tick", x: 4, y: y + 4}, `${Math.round(f * 100)}%`));
+  }
+  days.forEach((d, i) => {
+    const share = d.reels ? d.fit / d.reels : 0, height = share * (H - P.t - P.b), x = P.l + i * bw + 2;
+    const y = H - P.b - height;
+    s.append(svg("path", {d: barPath(x, y, bw - 4, height, 3), fill: d.day === keep ? "var(--viz-after)" : "var(--viz-bar)"}));
+    if (n <= 16 || i % 2 === 0) s.append(svg("text", {class: "tick", x: x + (bw - 4) / 2, y: H - 14, "text-anchor": "middle"}, d.day.slice(5)));
+    const hit = svg("rect", {class: "hit", x: P.l + i * bw, y: P.t, width: bw, height: H - P.t - P.b, tabindex: 0});
+    hit.append(svg("title", {}, `${d.day}: ${d.fit} of ${d.reels} reels fit the persona (${pct(share)}), ` +
+      `${d.watched} watched, ${d.liked} liked`));
+    hit.onclick = () => { $("f-day").value = d.day; loadFeed(); };
+    s.append(hit);
+  });
+  $("progress-chart").replaceChildren(s);
+  $("progress-sub").textContent = "Share of each day's reels that fit the persona (Jev's score at or above the watch line). " +
+    "Click a day to list its reels.";
+  $("progress-table").replaceChildren(h("tr", {}, ...["Day", "Reels", "Fit the persona", "Watched", "Liked"].map((t, i) =>
+      h("th", {class: i ? "num" : null, text: t}))),
+    ...days.map((d) => h("tr", {}, h("td", {text: d.day}), ...[d.reels, d.fit, d.watched, d.liked].map((v) =>
+      h("td", {class: "num", text: v})))));
+}
+
+// ── DEMO: the simulated sessions on the Run tab ──
+
+const demoState = {days: [], day: null, session: null, timer: null, lines: []};
+
+function applySource() {
+  document.body.classList.toggle("demo", SOURCE === "demo");
+  $("demo-banner").hidden = SOURCE !== "demo";
+  $("demo-deck").hidden = SOURCE !== "demo";
+  $("source").value = SOURCE;
+}
+
+function renderDemoStatus() {
+  $("run-state").textContent = "Demo";
+  $("run-state").className = "state";
+  $("run-status").textContent = demoState.session ? `Simulated session ${demoState.session.session_id}, ` +
+    `simulated ${localTime(demoState.session.simulated_start)}` : "Simulated sessions: pick a day and a session.";
+  $("progress").hidden = true;
+  $("nav-run-meta").textContent = "";
+}
+
+async function loadDemoSessions() {
+  if (SOURCE !== "demo") return;
+  try { demoState.days = (await api("/api/demo/sessions?account=" + encodeURIComponent(account()))).days; }
+  catch (e) { toast(e.message, true); demoState.days = []; }
+  const select = $("demo-day");
+  select.replaceChildren(...[...demoState.days].reverse().map((d) => h("option", {value: d.date,
+    text: new Date(d.date + "T12:00").toLocaleDateString([], {weekday: "short", day: "numeric", month: "short", year: "numeric"})})));
+  if (!demoState.days.some((d) => d.date === demoState.day)) demoState.day = demoState.days.length ? demoState.days[demoState.days.length - 1].date : null;
+  select.value = demoState.day || "";
+  drawDemoList();
+}
+
+function drawDemoList() {
+  const day = demoState.days.find((d) => d.date === demoState.day);
+  $("demo-list").replaceChildren(...(day ? day.sessions : []).map((x) => {
+    const b = h("button", {class: demoState.session && demoState.session.session_id === x.id ? "on" : null},
+      `${new Date(x.start.replace(" ", "T") + "Z").toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})} · ${x.reels} reels`,
+      h("small", {text: `watched ${x.WATCH + x.FULL_WATCH + x.REWATCH} · ❤ ${x.liked} · 🔖 ${x.saved} · ➕ ${x.followed}`}));
+    b.onclick = () => openDemoSession(x.id, false);
+    return b;
+  }));
+  $("btn-demo-replay").disabled = $("btn-demo-show").disabled = !demoState.session;
+}
+
+async function openDemoSession(id, replay) {
+  clearInterval(demoState.timer);
+  let d;
+  try { d = await api("/api/demo/log?session=" + id); } catch (e) { toast(e.message, true); return; }
+  demoState.session = d.session;
+  demoState.lines = d.lines;
+  drawDemoList();
+  renderDemoStatus();
+  $("demo-meta").textContent = `Simulated ${localTime(d.session.simulated_start)} to ${localTime(d.session.simulated_end)}; ` +
+    `generated ${localTime(d.session.generated_at)}. ${d.lines.length} log lines.`;
+  showDemoLog(replay);
+}
+
+function showDemoLog(replay) {
+  clearInterval(demoState.timer);
+  const box = $("console"), lines = demoState.lines;
+  box.textContent = "";
+  clearStream();
+  const stamp = (l) => `[${localTime(l.at)}] ${l.line}\n`;
+  if (!replay) {
+    box.textContent = lines.map(stamp).join("");
+    addToStream(lines.map((l) => l.line).join("\n"), false);
+    return;
+  }
+  let i = 0;  // a replay: the lines arrive in simulated order, twenty times faster than they happened
+  const t0 = Date.parse(lines[0].at.replace(" ", "T") + "Z"), started = Date.now();
+  demoState.timer = setInterval(() => {
+    const now = t0 + (Date.now() - started) * 20, batch = [];
+    while (i < lines.length && Date.parse(lines[i].at.replace(" ", "T") + "Z") <= now) batch.push(lines[i++]);
+    if (batch.length) {
+      box.append(batch.map(stamp).join(""));
+      box.scrollTop = box.scrollHeight;
+      addToStream(batch.map((l) => l.line).join("\n"), true);
+      $("run-clock").textContent = "Simulated " + localTime(batch[batch.length - 1].at);
+    }
+    if (i >= lines.length) clearInterval(demoState.timer);
+  }, 200);
 }
 
 function drawPersonas() {
@@ -2053,7 +2277,7 @@ function drawCreators() {
   $("creators").replaceChildren(
     h("tr", {}, h("th", {text: "Creator"}), h("th", {class: "num", text: "Reels"}), h("th", {text: "Usually"}),
       h("th", {class: "num", text: "Watched"}), all ? h("th", {text: "Reached"}) : null),
-    ...d.creators.map((c) => h("tr", {}, h("td", {}, link(`https://www.instagram.com/${encodeURIComponent(c.creator)}/`, "@" + c.creator)),
+    ...d.creators.map((c) => h("tr", {}, h("td", {}, link(igProfile(c.creator), "@" + c.creator)),
       h("td", {class: "num", text: String(c.reels)}), h("td", {text: c.category ? d.categories[c.category] : "—"}),
       h("td", {class: "num", text: pct(c.watched)}),
       all ? h("td", {text: (c.accounts || []).map((a) => "@" + a).join(", ")}) : null)));
@@ -2092,7 +2316,7 @@ async function exportFeed(phase, format) {
   try {
     const where = all ? "scope=all" : `account=${encodeURIComponent(account())}`;
     const res = await fetch(`/api/feed/export?${where}&phase=${phase}&format=${format}`,
-                            {headers: {"X-PRAG-Token": TOKEN}, cache: "no-store"});
+                            {headers: {"X-PRAG-Token": TOKEN, "X-PRAG-Source": SOURCE}, cache: "no-store"});
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
     const url = URL.createObjectURL(await res.blob());
     const a = h("a", {href: url, download: `${all ? "all-accounts" : account()}-${phase}.${format}`});
@@ -2422,6 +2646,7 @@ function showTab(name) {
   });
   document.querySelectorAll("main > section").forEach((s) => { s.hidden = s.id !== "tab-" + name; });
   if (name === "digest") loadDigest();
+  if (name === "run") loadDemoSessions();
   if (name === "report") loadReport();
   if (name === "schedule") loadSchedules();
   if (name === "bias") loadBias();
@@ -2621,7 +2846,25 @@ function init() {
   $("headless").checked = store.get("headless", false);
   $("headless").addEventListener("change", () => { store.set("headless", $("headless").checked); headlessHint(); renderForm(); });
   headlessHint();
-  $("account").addEventListener("change", () => { store.set("account", $("account").value); refresh().then(() => showTab(tab)); });
+  $("account").addEventListener("change", () => { store.set("account", $("account").value); demoState.session = null;
+    refresh().then(() => showTab(tab)); });
+  applySource();
+  $("source").addEventListener("change", () => {
+    SOURCE = $("source").value === "demo" ? "demo" : "live";
+    store.set("source", SOURCE);
+    clearInterval(demoState.timer);
+    demoState.session = null;
+    clearStream();
+    $("console").textContent = "";
+    out.key = null;
+    out.offset = 0;
+    applySource();
+    refresh().then(() => showTab(tab));
+  });
+  $("demo-day").onchange = () => { demoState.day = $("demo-day").value; demoState.session = null; drawDemoList(); };
+  $("btn-demo-replay").onclick = () => { setView("reels"); showDemoLog(true); };
+  $("btn-demo-show").onclick = () => showDemoLog(false);
+  $("f-day").onchange = loadFeed;
 
   $("btn-run").onclick = () => start(false);
   $("btn-digest").onclick = () => start(true);

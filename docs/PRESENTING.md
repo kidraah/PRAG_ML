@@ -11,6 +11,10 @@ Reels also carry news that never makes it to the papers, so what a feed serves m
 
 ## 2. Collection: the agent (2 min). Tabs: Run, Persona, Feed
 
+Show the real sessions on Live first. Then switch Data to **Demo** to show what two weeks look like: the banner
+says it plainly, these are simulated sessions. On Run, pick a day and a session and press Replay; on Feed, the
+day-by-day chart shows the feed narrowing; on Digest, any of the 14 days.
+
 - **Persona tab.** Each account is a persona: who they are and what they watch to the end. Show the structured
   profile under it: topic weights, stance and language preferences.
 - **Run tab.** The agent scrolls Reels as that persona. It reads the feed's JSON a few reels ahead, transcribes
@@ -22,9 +26,9 @@ Reels also carry news that never makes it to the papers, so what a feed serves m
 
 ## 3. The corpus (1 min). Tab: Corpus
 
-About 24,000 unique items. Say where they come from, which the table shows: reels from the Instagram sessions;
-about 15,300 reels written for the two feeds by an LLM following each persona's profile, 2,400 of them about this
-week's real news, each linked to its article; news headlines; Wikipedia. Then the two persona cards: each feed leans the way its persona does (cricket, security and
+About 44,500 unique items. Say where they come from, which the table shows: reels from the Instagram sessions;
+about 31,000 reels written for the two feeds by an LLM following each persona's profile, about 18,000 of them
+about real news from the last two weeks, each linked to its article; news headlines; Wikipedia. Then the two persona cards: each feed leans the way its persona does (cricket, security and
 infrastructure on one side; labour, civil liberties and indie music on the other), yet both get the other side's
 politics and things they'd skip, the way a real feed does.
 

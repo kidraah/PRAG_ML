@@ -1,6 +1,7 @@
 """Tests for the Gradient (gradient/) and Jev's cover images — no network, no LLM, no MLX."""
 
 import asyncio
+import datetime
 import hashlib
 import io
 import json
@@ -14,7 +15,7 @@ from unittest import mock
 import numpy as np
 
 from database.db import init_db
-from gradient import chat, generate, ingest, label, lora, prefs, retrieval, store, vectors
+from gradient import answers, chat, generate, ingest, label, lora, prefs, retrieval, simulate, store, vectors
 from perception import jev, jev_image
 
 
@@ -268,10 +269,11 @@ class ChatTests(unittest.TestCase):
     def test_an_answer_cites_only_its_evidence(self):
         evidence = {"items": [{"id": "x", "text": "petrol up", "creator": "@a"}], "model": "m", "enough": True}
         with mock.patch.object(chat.retrieval, "search", return_value=evidence), \
-                mock.patch.object(chat, "generate", return_value=("Prices are up [1] [4]", "lora-v1")) as gen, \
+                mock.patch.object(chat, "generate", return_value=("Prices are up [1] [4].", "lora-v1")) as gen, \
                 mock.patch.object(chat.lora, "system_prompt", return_value="SYS"):
             a = chat.answer(None, "mlproject01", "fuel?")
-        self.assertEqual((a["text"], a["cited"], a["invalid_citations"], a["adapter"]), ("Prices are up [1] ", [1], [4], "lora-v1"))
+        self.assertEqual((a["text"], a["cited"], a["invalid_citations"], a["adapter"], a["typing"]),
+                         ("Prices are up [1].", [1], [4], "lora-v1", False))
         self.assertIn("[1] @a: petrol up", gen.call_args.args[1])  # the evidence is in the prompt
 
     def test_a_cut_off_reply_ends_at_its_last_sentence(self):
@@ -282,6 +284,41 @@ class ChatTests(unittest.TestCase):
     def test_reasoning_tags_and_stray_tokens_are_cleaned(self):
         self.assertEqual(chat.clean("<think>\n\n퍙\n\nGood breakdown [3]."), "Good breakdown [3].")
         self.assertEqual(chat.clean("<think>plan</think>Answer."), "Answer.")
+        self.assertEqual(chat.clean("</tool_call>\n\n\n\nSeeing this makes me angry. [5]"), "Seeing this makes me angry. [5]")
+
+    def test_a_debate_streams_turn_by_turn_and_stops_when_asked(self):
+        seen = []
+
+        def fake_generate(account, system, user, max_tokens=0, *, history=None, on_text=None, should_stop=lambda: False):
+            on_text("Half a")
+            seen.append([e.get("text") for e in job["events"]])  # the panel sees the reply being written
+            return (f"{account} says it.", "lora-v2")
+
+        job = {"params": {"topic": "metro fares", "rounds": 2}, "events": [], "stop": False}
+        with mock.patch.object(chat.retrieval, "search", return_value={"items": [], "model": None, "enough": False}), \
+                mock.patch.object(chat, "generate", fake_generate), mock.patch.object(chat.lora, "system_prompt",
+                                                                                      return_value="SYS"):
+            chat.debate_job(job, None)
+        kinds = [(e["type"], e.get("account"), e.get("round")) for e in job["events"]]
+        self.assertEqual(kinds, [("turn", "mlproject01", 1), ("turn", "mlproject02", 1), ("turn", "mlproject01", 2),
+                                 ("turn", "mlproject02", 2), ("moderator", None, None)])
+        self.assertEqual(seen[0], ["Half a"])
+        self.assertFalse(any(e["typing"] for e in job["events"]))
+        job = {"params": {"topic": "metro fares", "rounds": 3}, "events": [], "stop": True}
+        with mock.patch.object(chat, "generate", fake_generate):
+            chat.debate_job(job, None)
+        self.assertEqual(job["events"], [])
+
+    def test_chat_passes_the_conversation_so_far(self):
+        job = {"params": {"account": "mlproject01", "question": "and fares?",
+                          "history": [{"role": "user", "text": "metro?"}, {"role": "assistant", "text": "Late [1]."}]},
+               "events": [], "stop": False}
+        with mock.patch.object(chat.retrieval, "search", return_value={"items": [], "model": None, "enough": False}), \
+                mock.patch.object(chat, "generate", return_value=("Up.", "lora-v2")) as gen, \
+                mock.patch.object(chat.lora, "system_prompt", return_value="SYS"):
+            chat.chat_job(job, None)
+        self.assertEqual(gen.call_args.kwargs["history"][1]["text"], "Late [1].")
+        self.assertEqual(job["events"][0]["text"], "Up.")
 
     def test_no_evidence_means_saying_so(self):
         with mock.patch.object(chat.retrieval, "search", return_value={"items": [], "model": None, "enough": False}), \
@@ -305,45 +342,53 @@ class ChatTests(unittest.TestCase):
 
 
 class LoraTests(Temp):
-    def test_examples_follow_the_item_splits(self):
+    def feed(self, accounts=("mlproject01",), n=200):
         b = store.new_batch(self.conn, "t")
-        for n in range(200):
-            item, _ = store.add_item(self.conn, {"origin": "generated", "text": f"reel number {n} about trains",
-                                                 "caption": f"cap {n}", "topic": "infrastructure",
-                                                 "group_id": f"g{n}", "meta": {"angle": "metro delays"}}, b)
-            store.add_to_feed(self.conn, "mlproject01", item, b, "generator")
-            self.conn.execute("INSERT INTO takes VALUES (?, 'mlproject01', 'like', ?)", (item, f"take {n}"))
-        store.add_item(self.conn, {"origin": "wikipedia", "title": "Saturn", "text": "a planet"}, b)
-        with mock.patch.object(lora.biases, "load", return_value=persona()):
-            examples = lora.build_examples(self.conn, "mlproject01")
-        splits = {r["id"]: r["split"] for r in self.conn.execute("SELECT id, split FROM items")}
-        texts = {s: " ".join(json.dumps(e) for e in examples[s]) for s in examples}
-        for item_id, split in splits.items():
-            n = self.conn.execute("SELECT caption FROM items WHERE id = ?", (item_id,)).fetchone()[0]
-            if n and split == "test":
-                self.assertNotIn(f"\"take {n[4:]}\"", texts["train"])  # a test reel's take never trains
-        kinds = " ".join(texts.values())
-        self.assertIn("Thoughts?", kinds)
-        self.assertIn("Reels from your feed", kinds)
-        self.assertIn("hasn't shown me anything about Saturn", kinds)
-        self.assertNotIn("Debate on", kinds)  # no other persona's takes yet: nothing to answer
-        self.assertTrue(all(e["messages"][0]["role"] == "system" for e in examples["train"]))
-
-    def test_debate_examples_answer_the_other_persona(self):
-        b = store.new_batch(self.conn, "t")
-        for n in range(150):
-            for account in ("mlproject01", "mlproject02"):
-                item, _ = store.add_item(self.conn, {"origin": "generated", "text": f"{account} reel {n} on roads",
-                                                     "topic": "infrastructure", "group_id": f"{account}{n}"}, b)
+        for i in range(n):
+            for account in accounts:
+                item, _ = store.add_item(self.conn, {"origin": "generated", "text": f"{account} reel {i} about trains",
+                                                     "caption": f"cap {i}", "topic": "infrastructure",
+                                                     "group_id": f"g{i // 4}"}, b)
                 store.add_to_feed(self.conn, account, item, b, "generator")
-                self.conn.execute("INSERT INTO takes VALUES (?, ?, 'like', ?)", (item, account, f"{account} says {n}"))
+                self.conn.execute("INSERT INTO takes VALUES (?, ?, 'like', ?)", (item, account, f"{account} take {i}"))
+        store.add_item(self.conn, {"origin": "wikipedia", "title": "Saturn", "text": "a planet"}, b)
+        self.conn.executescript(answers.TABLE)
+
+    def test_written_answers_train_and_follow_the_splits(self):
+        self.feed()
+        with mock.patch.object(answers.biases, "load", return_value=persona()):
+            todo = answers.tasks(self.conn, "mlproject01", 40)
+        self.assertEqual(len(todo), 40)
+        for t in todo:  # a task's reels share its split
+            self.assertEqual({it["split"] for it in t["items"]}, {t["split"]})
+        for t in todo:
+            self.conn.execute("INSERT INTO answers VALUES (?, 'mlproject01', 'answer', ?, 'Q?', ?, ?, 'w', 'now')",
+                              (t["id"], json.dumps([it["id"] for it in t["items"]]), f"Written answer {t['id']} [1].", t["split"]))
         with mock.patch.object(lora.biases, "load", return_value=persona()):
             examples = lora.build_examples(self.conn, "mlproject01")
-        turns = [e["messages"] for e in examples["train"] if e["messages"][1]["content"].startswith("Debate on")]
-        self.assertGreater(len(turns), 5)
-        replies = [t for t in turns if "The other side said" in t[1]["content"]]
-        self.assertIn("mlproject02 says", replies[0][1]["content"])  # the opponent is the other persona
-        self.assertIn("mlproject01 says", replies[0][2]["content"])  # the reply is this persona's own take
+        texts = {s: " ".join(json.dumps(e) for e in examples[s]) for s in examples}
+        for t in todo:
+            name = {"val": "valid"}.get(t["split"], t["split"])
+            self.assertIn(f"Written answer {t['id']}", texts[name])
+            for other in set(texts) - {name}:
+                self.assertNotIn(f"Written answer {t['id']}", texts[other])
+        kinds = " ".join(texts.values())
+        self.assertIn("Reels from your feed", kinds)
+        self.assertIn("Thoughts?", kinds)
+        self.assertIn("hasn't shown me anything about Saturn", kinds)
+        self.assertNotIn("saw it differently", kinds)  # no template answers any more
+        train = examples["train"]
+        written = sum("Written answer" in e["messages"][2]["content"] for e in train)
+        self.assertGreater(written, (len(train) - written) // 2)  # short takes stay a minority
+
+    def test_debate_tasks_quote_the_other_persona(self):
+        self.feed(("mlproject01", "mlproject02"), n=120)
+        todo = answers.tasks(self.conn, "mlproject01", 100)
+        debates = [t for t in todo if t["kind"] == "debate"]
+        self.assertGreater(len(debates), 5)
+        self.assertIn("mlproject02 take", debates[0]["question"])
+        self.assertTrue(debates[0]["question"].startswith("Debate on infrastructure."))
+        self.assertIn("Task 1 (debate; the question is fixed", answers.prompt(debates[:1]))
 
     def test_training_log_is_read(self):
         old = "Iter 1: Val loss 3.100, Val took 1s\nIter 20: Train loss 2.500, It/sec 0.80\nIter 40: Train loss 2.000"
@@ -355,6 +400,66 @@ class LoraTests(Temp):
         parsed = lora.parse_log(new)
         self.assertEqual((parsed["val_loss"], parsed["train_loss"][-1], parsed["tokens_per_sec"]),
                          ([{"iter": 1, "loss": 4.162}], {"iter": 10, "loss": 2.498}, 38.0))
+
+
+class SimulateTests(Temp):
+    def test_two_weeks_of_simulated_sessions_kept_apart_and_labelled(self):
+        from database import db
+
+        demo_dir = os.path.join(self.tmp, "demo")
+        for name, value in (("DEMO_DIR", demo_dir), ("DEMO_DIGEST_DIR", os.path.join(demo_dir, "digests")),
+                            ("DEMO_FEED_MODEL", os.path.join(demo_dir, "m.joblib")),
+                            ("DEMO_FEED_VECTORS", os.path.join(demo_dir, "v.npz"))):
+            self.enterContext(mock.patch.object(simulate, name, value))
+        self.enterContext(mock.patch.object(db, "DEMO_DB_PATH", os.path.join(demo_dir, "reels.db")))
+        live = os.path.join(self.tmp, "live.db")
+        self.enterContext(mock.patch.object(db, "DB_PATH", live))
+        b = store.new_batch(self.conn, "t")
+        rng = np.random.default_rng(1)
+        topics = list(taxonomy_topics := ["cricket", "labour", "astrology", "infrastructure", "indie_music"])
+        for n in range(900):
+            topic = topics[n % len(topics)]
+            news = {"news_title": f"Real story {n}", "news_source": "The Hindu",
+                    "news_published_at": "2026-10-13T08:00:00+00:00"} if n % 7 == 0 else {}
+            item, _ = store.add_item(self.conn, {"origin": "generated", "caption": f"{topic} reel {n}", "topic": topic,
+                                                 "creator": f"@c{n % 40}", "stance": "neutral", "meta": news,
+                                                 "source_url": "https://www.thehindu.com/x" if news else None}, b)
+            for account in store.ACCOUNTS:
+                likes = {"mlproject01": ("cricket", "infrastructure"), "mlproject02": ("labour", "indie_music")}[account]
+                store.add_label(self.conn, item, account, f"fp-{account}", "jev", "v",
+                                float(0.85 if topic in likes else rng.uniform(0, 0.45)), int(topic in likes))
+            store.add_to_feed(self.conn, store.ACCOUNTS[n % 2], item, b, "generator")
+        self.conn.commit()
+        fake = lambda account: SimpleNamespace(name=account, interests="x", fingerprint=f"fp-{account}", persona=True,  # noqa: E731
+                                               profile={"exploration": {"start_temperature": 0.8, "end_temperature": 0.12}})
+        with mock.patch.object(simulate.biases, "load", side_effect=fake), \
+                mock.patch("stories.digest.load_bias", side_effect=fake), \
+                mock.patch("ml.feed_model.train", return_value=None):
+            out = simulate.build(days=4, sessions_per_day=2, today=datetime.date(2026, 10, 15), progress=lambda m: None,
+                                 embed_fn=fake_embed)
+        self.assertFalse(os.path.exists(live))  # the real database is never touched
+        demo = sqlite3.connect(os.path.join(demo_dir, "reels.db"))
+        sessions = demo.execute("SELECT simulated_date, simulated_start, generated_at FROM demo_sessions").fetchall()
+        self.assertEqual(len(sessions), 2 * 4 * 2)
+        self.assertEqual(sorted({s[0] for s in sessions}), ["2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14"])
+        self.assertTrue(all(s[2] > "2026-10-20" for s in sessions))  # the real generation time, kept apart
+        news_days = demo.execute("SELECT MIN(i.shown_at) FROM impressions i JOIN demo_items d ON d.code = i.code "
+                                 "WHERE d.news_title IS NOT NULL").fetchone()[0]
+        self.assertGreaterEqual(news_days[:10], "2026-10-12")  # a story never shows before its publication day
+        actions = dict(demo.execute("SELECT decision, COUNT(*) FROM impressions GROUP BY decision").fetchall())
+        self.assertTrue({"SKIP", "FULL_WATCH"} <= set(actions))
+        first = demo.execute("SELECT line FROM demo_log ORDER BY session_id, n LIMIT 1").fetchone()[0]
+        self.assertIn("DEMO — simulated session", first)
+        reel_lines = [r[0] for r in demo.execute("SELECT line FROM demo_log WHERE line LIKE '#%'")]
+        self.assertRegex(reel_lines[0], r"^#\d+\s+\S+\s+.*→\s+(SKIP|WATCH|FULL_WATCH|REWATCH)\s+[\d.]+s")
+        digests = os.listdir(os.path.join(demo_dir, "digests", "mlproject01"))
+        self.assertIn("2026-10-14.json", digests)
+        with open(os.path.join(demo_dir, "digests", "mlproject01", "2026-10-14.html")) as fh:
+            page = fh.read()
+        self.assertIn("DEMO — simulated sessions", page)
+        self.assertNotIn("instagram.com/reels/demo", page)
+        self.assertIn("mlproject01", out["corpus_feed"])
+        self.assertTrue(self.conn.execute("SELECT 1 FROM feed WHERE via = 'demo_session'").fetchone())
 
 
 class JevImageTests(unittest.TestCase):

@@ -100,9 +100,15 @@ loss masked to the reply only. The examples are built from that persona's feed a
 | Example | Input | Target |
 |---|---|---|
 | Reaction | "This reel just came up: …" | The persona's take on it |
-| Grounded answer | A question, with 2–4 reels from the feed numbered as evidence | The persona's answer citing them, e.g. "[2]" |
+| Grounded answer | A question, with 3–4 reels from the feed on one story or topic, numbered as evidence | The persona's answer, 3–5 sentences that interpret the reels and cite each claim, e.g. "[2]" |
 | Abstain | A question the given reels don't cover | "My feed hasn't shown me anything about that" |
-| Debate | "The other side said: …" (the other persona's real take on the same topic), with reels as evidence | This persona's own answer, citing them |
+| Debate | "The other side said: …" (the other persona's real take on the same topic), with reels as evidence | This persona's answer to it, citing its own reels |
+
+**Where the answers come from.** The grounded and debate answers are written by an LLM (`gradient/answers.py`,
+about 3,000 per persona): it gets the persona and the reels, and writes the question a friend might ask and the
+answer in the persona's voice. It's told to say what the reels report in its own words, cite every claim, and never
+paste a caption. The first adapters (v1, v2) learned from template answers that pasted captions, and that's what they
+did in chat. lora-v3 is trained from the base model on the written answers instead.
 
 **Evaluation.** Perplexity on held-out examples (from test-split reels the adapter never trained on), measured
 three ways: the base model, the base model plus this persona's adapter, and this adapter on the *other* persona's
@@ -175,20 +181,39 @@ python -m gradient update --lora   # …and continue each persona's LoRA adapter
   realistic text, not real Instagram posts, and the corpus records that for every item. The by-source rows in the
   results show how the models do on real Instagram reels against the rest.
 - The personas are fictional individuals, not stand-ins for everyone who shares their politics.
-- The grounded-answer examples are assembled from templates around the persona's takes, and the adapter picks up
-  their phrasing: it tends to add "X saw it differently" even when the other reel agrees. Writing those answers
-  with an LLM instead of a template is the next improvement to the training data.
-- Replies are short, often one sentence, because that's the voice the personas learned from their takes. Longer
-  answers would need longer training targets.
+- lora-v1 and v2 learned from template answers and pasted captions back. lora-v3 learns from written answers and
+  interprets instead; its Hinglish can still be clumsy, which is the ceiling of a 4B model.
 - Citation checks and abstention training make answers better grounded. They can't guarantee a model never says
   something unsupported. And a persona believing something doesn't make it true: that's what the "Real or not"
   phase is for.
+
+## DEMO: simulated sessions
+
+`python -m gradient.simulate` builds 14 days of **simulated** sessions for both personas, three a day, in their own
+database (`datasets/demo-sessions/reels.db`). The panel shows them only when Data is set to **Demo**, under a
+"DEMO — simulated sessions" banner on every tab; Live shows the real sessions and nothing else.
+
+- **The recommender.** It serves the corpus's written reels, with news reels only from the day their story was
+  published. It never sees the persona's scores: it learns topic and stance affinities from what the persona watches,
+  likes and skips. A cold-start prior favours mass-appeal content on day one and fades, so the feed narrows the way a
+  real one does: the share of reels that fit the persona rises from about 70% on the first day to about 90% on the
+  last.
+- **The persona.** The score is Jev's judgement for the persona, and the session's own engagement policy
+  (`agent/bandit.py`) turns it into skip / watch / full watch / rewatch, dwell time, likes, saves and follows.
+- **What's recorded.** Sessions and impressions in the live schema, so the Run, Feed, Digest and Report tabs work
+  unchanged. Each session has its console log, timestamped in simulated time (Run tab: pick a day and a session,
+  read the log or replay it). It also stores its simulated start and end, and when it was really generated.
+- **Digests.** Built for each simulated day by the digest's own code; a reel about a real story cites that article.
+- **Training.** The simulation draws on the training corpus, and the reels it served from outside a persona's feed
+  join that feed (`via = demo_session`), so chat and debate know what the simulated feed showed them.
 
 ## Commands
 
 ```bash
 python -m gradient.generate --account mlproject01 --reels 6000   # write reels for a feed (resumable)
-python -m gradient.news --days 4 --stories 200                   # reels about the latest real news, per persona
+python -m gradient.news --days 14 --search --stories 1000        # reels about the last two weeks' real news
+python -m gradient.answers --account mlproject01 --n 3000        # written answers for the persona language model
+python -m gradient.simulate                                      # DEMO: 14 days of simulated sessions
 python -m gradient build              # first time: earlier corpus + sessions + labels + headlines + models
 python -m gradient update [--lora]    # every time after: new data → labels → retrain
 python -m gradient.lora --account mlproject01 [--resume]         # train / continue one adapter

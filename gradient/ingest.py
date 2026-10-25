@@ -13,6 +13,12 @@ PRAG — the Gradient's ingestion: everything that grows the training corpus.
                that persona's Jev score, so what the persona likes it keeps
                getting, the way the real feed narrows
 
+  demo         DEMO: the reels the simulated sessions served (gradient/simulate.py)
+               join each persona's feed as "demo_session", so chat, debate and
+               training use the same demo dataset the Run, Feed and Digest tabs
+               show under the Demo source (the reels were already in the corpus;
+               this records that the simulated feed served them)
+
 Generated reels come in through generate.py, labels through label.py.
 """
 
@@ -143,3 +149,25 @@ def recommend(conn: sqlite3.Connection, account: str, n: int = 400, seed: int = 
         picked += 1
     store.close_batch(conn, batch, {"recommender": {account: picked}})
     return picked
+
+
+def ingest_demo(conn: sqlite3.Connection, demo_db: str | None = None) -> dict:
+    """DEMO: every corpus reel a simulated session served, into that account's feed (via "demo_session")."""
+    from database import db
+
+    demo_db = demo_db or db.DEMO_DB_PATH
+    if not os.path.exists(demo_db):
+        return {}
+    source = sqlite3.connect(demo_db)
+    rows = source.execute("SELECT DISTINCT s.account, d.item_id FROM impressions i JOIN sessions s ON s.id = i.session_id "
+                          "JOIN demo_items d ON d.code = i.code").fetchall()
+    source.close()
+    conn.execute("DELETE FROM feed WHERE via = 'demo_session'")  # the simulation is rebuilt whole, so is this
+    batch = store.new_batch(conn, "demo", "DEMO: reels the simulated sessions served", batch_id="demo-sessions")
+    counts: dict = {}
+    for account, item_id in rows:
+        before = conn.total_changes
+        store.add_to_feed(conn, account, item_id, batch, "demo_session")
+        counts[account] = counts.get(account, 0) + (conn.total_changes - before)
+    store.close_batch(conn, batch, {"demo_session": counts})
+    return counts

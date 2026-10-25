@@ -25,7 +25,7 @@ from collections import Counter
 
 from agent.bias import has_own as has_own_persona
 from agent.bias import load as load_bias
-from config import CURATION_WINDOW
+from config import CURATION_WINDOW, WATCH_THRESHOLD
 from dashboard.report import curated_since, curation_verdict
 from database.db import choose_account, get_connection, init_db, list_accounts
 from perception.categorize import CATEGORIES
@@ -108,6 +108,28 @@ def reel_items(rows: list[dict], limit: int) -> list[dict]:
     } for r in latest]
 
 
+def local_day(shown_at: str | None) -> str | None:
+    """The Mac's calendar day a UTC "YYYY-MM-DD HH:MM:SS" falls on."""
+    if not shown_at:
+        return None
+    return datetime.datetime.fromisoformat(shown_at).replace(tzinfo=datetime.timezone.utc).astimezone().date().isoformat()
+
+
+def progression(rows: list[dict]) -> list[dict]:
+    """Per day: reels shown (ads aside), how many fit the persona (score at or above the watch line), watched, liked."""
+    days: dict[str, dict] = {}
+    for r in rows:
+        if r["is_ad"]:
+            continue
+        day = local_day(r["shown_at"])
+        d = days.setdefault(day, {"day": day, "reels": 0, "fit": 0, "watched": 0, "liked": 0})
+        d["reels"] += 1
+        d["fit"] += r["value_score"] is not None and r["value_score"] >= WATCH_THRESHOLD
+        d["watched"] += r["decision"] in WATCHED
+        d["liked"] += bool(r["liked"])
+    return [days[k] for k in sorted(k for k in days if k)]
+
+
 def counts(rows: list[dict]) -> dict:
     return {
         "reels": len(rows), "ads": sum(bool(r["is_ad"]) for r in rows),
@@ -116,8 +138,8 @@ def counts(rows: list[dict]) -> dict:
     }
 
 
-def summary(conn: sqlite3.Connection, account: str, limit: int = 400) -> dict:
-    """Everything the Feed tab shows for one account."""
+def summary(conn: sqlite3.Connection, account: str, limit: int = 400, day: str | None = None) -> dict:
+    """Everything the Feed tab shows for one account; `day` narrows the reel list to one calendar day."""
     rows, state = load_feed(conn, account)
     for row in rows:
         row["account"] = account
@@ -136,7 +158,8 @@ def summary(conn: sqlite3.Connection, account: str, limit: int = 400) -> dict:
         "counts": counts(rows),
         "mix": {"warm-up": mix(warmup), "curated": mix(curated)},
         "creators": top_creators(curated or rows),
-        "reels": reel_items(rows, limit),
+        "days": progression(rows), "day": day,
+        "reels": reel_items([r for r in rows if local_day(r["shown_at"]) == day], 5000) if day else reel_items(rows, limit),
     }
 
 

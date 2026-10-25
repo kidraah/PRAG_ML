@@ -182,7 +182,11 @@ def talk_start(body: dict) -> dict:
     if not text:
         raise ValueError("Type a question or a topic first.")
     if kind == "chat":
-        return chat.submit("chat", {"account": _account(body.get("account")), "question": text})
+        history = []
+        for turn in (body.get("history") or [])[-6:]:  # the conversation so far, for follow-up questions
+            if isinstance(turn, dict) and turn.get("role") in ("user", "assistant") and turn.get("text"):
+                history.append({"role": turn["role"], "text": " ".join(str(turn["text"]).split())[:1000]})
+        return chat.submit("chat", {"account": _account(body.get("account")), "question": text, "history": history})
     if kind == "debate":
         return chat.submit("debate", {"topic": text, "rounds": min(3, max(1, int(body.get("rounds") or 2)))})
     if kind == "compare":

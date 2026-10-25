@@ -70,15 +70,46 @@ def lora_section(account: str, history: list[dict]) -> list[str]:
     if not history:
         return [f"### @{account}: persona language model", "", "No adapter trained yet.", ""]
     out = [f"### @{account}: persona language model", "",
-           "| Version | Examples | Steps | Minutes | Held-out ppl, base | With adapter | Adapter on the other persona |",
-           "|---|---|---|---|---|---|---|"]
+           "| Version | Examples | Steps | Minutes | Scored on | Held-out ppl, base | With adapter | Adapter on the other persona |",
+           "|---|---|---|---|---|---|---|---|"]
     for h in history:
         r = h["report"]
         e = r["eval"]
         out.append(f"| lora-v{r['version']}{' (continued)' if r.get('resumed_from') else ''} | {r['examples']['train']:,} | "
-                   f"{r['iters']} | {r['minutes']} | {fmt(e['base']['ppl'], 2)} | {fmt(e['adapter']['ppl'], 2)} | "
+                   f"{r['iters']} | {r['minutes']} | {r.get('eval_set') or 'its own held-out examples'} | "
+                   f"{fmt(e['base']['ppl'], 2)} | {fmt(e['adapter']['ppl'], 2)} | "
                    f"{fmt((e.get('other') or {}).get('ppl'), 2)} |")
     return out + [""]
+
+
+def demo_section() -> list[str]:
+    """DEMO: the simulated sessions (gradient/simulate.py), labelled as such."""
+    import sqlite3
+
+    from database.db import DEMO_DB_PATH
+
+    if not os.path.exists(DEMO_DB_PATH):
+        return []
+    demo = sqlite3.connect(DEMO_DB_PATH)
+    out = ["## DEMO — simulated sessions", "",
+           "Not Instagram observations: 14 days of sessions simulated by `python -m gradient.simulate` from the "
+           "corpus's written reels, Jev's scores and the session engagement policy, in their own database. Dates are "
+           "simulated; each session also records when it was generated.", "",
+           "| Account | Simulated days | Sessions | Reels | Watched | Liked | Fit the persona, first day → last day |",
+           "|---|---|---|---|---|---|---|"]
+    for account in store.ACCOUNTS:
+        days = demo.execute("SELECT ds.simulated_date, AVG(i.value_score >= 0.4) FROM impressions i JOIN demo_sessions ds "
+                            "ON ds.session_id = i.session_id WHERE ds.account = ? AND i.is_ad = 0 GROUP BY 1 ORDER BY 1",
+                            (account,)).fetchall()
+        n = demo.execute("SELECT COUNT(DISTINCT ds.session_id), COUNT(*), SUM(i.decision <> 'SKIP'), SUM(i.liked) "
+                         "FROM impressions i JOIN demo_sessions ds ON ds.session_id = i.session_id WHERE ds.account = ? "
+                         "AND i.is_ad = 0", (account,)).fetchone()
+        if days:
+            out.append(f"| @{account} | {days[0][0]} to {days[-1][0]} | {n[0]} | {n[1]:,} | {n[2]:,} | {n[3]:,} | "
+                       f"{days[0][1]:.0%} → {days[-1][1]:.0%} |")
+    generated = demo.execute("SELECT MIN(generated_at) FROM demo_sessions").fetchone()[0]
+    demo.close()
+    return out + ["", f"Generated {generated} UTC.", ""]
 
 
 def build(conn) -> str:
@@ -112,6 +143,7 @@ def build(conn) -> str:
     out += ["## Persona language models (LoRA)", ""]
     for account in store.ACCOUNTS:
         out += lora_section(account, runs(conn, account, "lora"))
+    out += demo_section()
     if usd["writer"]:
         out += [f"Writing the reels cost ${usd['writer']:.2f} on OpenRouter.", ""]
     return "\n".join(out)

@@ -169,6 +169,7 @@ class DigestTests(unittest.TestCase):
             ("E1", 0.45, "CEO career advice", "Relationships matter more than skills", 1),
             ("J1", 0.10, "Devotional", "", 1),                                          # not informative
             ("OLD", 0.95, "Old story", "From two days ago", 48),                        # outside the window
+            ("LATER", 0.95, "Later story", "Shown after the digest's end", -3),            # after it: not in it
         ]
         for seq, (code, score, topic, summary, hours) in enumerate(rows, start=1):
             log_impression(dict(session_id=sid, seq=seq, code=code, creator=f"c_{code}", score_basis="score",
