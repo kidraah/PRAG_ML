@@ -94,14 +94,16 @@ def first_sentence(text: str, limit: int = 140) -> str:
 
 
 def feed_items(conn, account: str) -> list[dict]:
-    rows = conn.execute("SELECT i.*, t.take, t.action FROM feed f JOIN items i ON i.id = f.item_id "
-                        "LEFT JOIN takes t ON t.item_id = i.id AND t.account = f.account WHERE f.account = ?",
-                        (account,))
+    rows = conn.execute("SELECT i.*, f.batch AS feed_batch, t.take, t.action FROM feed f JOIN items i "
+                        "ON i.id = f.item_id LEFT JOIN takes t ON t.item_id = i.id AND t.account = f.account "
+                        "WHERE f.account = ?", (account,))
     return [dict(r) for r in rows]
 
 
 def build_examples(conn, account: str, seed: int = 7, batches: set[str] | None = None) -> dict[str, list[dict]]:
-    """{"train", "valid", "test"}: chat examples from this account's feed (anchored in `batches` only, if given):
+    """{"train", "valid", "test"}: chat examples from this account's feed (anchored in `batches` only, if given: the
+    batches the reels joined this feed in, which for a reel written earlier and served later is not the one it was
+    written in):
     written answers and debate turns (answers.py), reactions, and abstentions."""
     rng = random.Random(f"{seed}|{account}")
     system = system_prompt(account)
@@ -115,13 +117,13 @@ def build_examples(conn, account: str, seed: int = 7, batches: set[str] | None =
     has_answers = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'answers'").fetchone()
     for row in conn.execute("SELECT * FROM answers WHERE account = ? ORDER BY id", (account,)) if has_answers else []:
         ctx = [items[i] for i in json.loads(row["items"]) if i in items]
-        if len(ctx) < 2 or (batches is not None and not any(c["batch"] in batches for c in ctx)):
+        if len(ctx) < 2 or (batches is not None and not any(c["feed_batch"] in batches for c in ctx)):
             continue
         written[row["split"]].append(chat(system + "\n\n" + context_block(ctx), row["question"], row["answer"]))
     out = {}
     for split, pool in by_split.items():
         examples = list(written[split])
-        anchors = [i for i in pool if i.get("take") and (batches is None or i["batch"] in batches)]
+        anchors = [i for i in pool if i.get("take") and (batches is None or i["feed_batch"] in batches)]
         rng.shuffle(anchors)
         reactions = anchors[:max(len(examples) // 2, 1)] if examples else anchors  # short takes stay a minority
         for item in reactions:

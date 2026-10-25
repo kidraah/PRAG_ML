@@ -479,6 +479,20 @@ class LoraTests(Temp):
         written = sum("Written answer" in e["messages"][2]["content"] for e in train)
         self.assertGreater(written, (len(train) - written) // 2)  # short takes stay a minority
 
+    def test_a_reel_served_later_is_new_in_the_batch_it_joined_the_feed(self):
+        self.feed(accounts=("mlproject01", "mlproject02"))
+        # mlproject02's reels, written long ago, join mlproject01's feed in a later batch (as a simulation does)
+        later = store.new_batch(self.conn, "demo", batch_id="demo-sessions-append-x")
+        theirs = [r[0] for r in self.conn.execute("SELECT item_id FROM feed WHERE account = 'mlproject02'")]
+        for item in theirs:
+            store.add_to_feed(self.conn, "mlproject01", item, later, "demo_session")
+            self.conn.execute("INSERT OR REPLACE INTO takes VALUES (?, 'mlproject01', 'like', ?)", (item, f"new take {item}"))
+        with mock.patch.object(lora.biases, "load", return_value=persona()):
+            fresh = lora.build_examples(self.conn, "mlproject01", batches={"demo-sessions-append-x"})
+        takes = [e for e in fresh["train"] if e["messages"][1]["content"].startswith("This reel just came up")]
+        self.assertTrue(takes)
+        self.assertTrue(all("new take" in e["messages"][2]["content"] for e in takes))
+
     def test_debate_tasks_quote_the_other_persona(self):
         self.feed(("mlproject01", "mlproject02"), n=120)
         todo = answers.tasks(self.conn, "mlproject01", 100)
