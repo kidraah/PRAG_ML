@@ -7,6 +7,12 @@ cover image. FeedCatalog listens to those responses (plus the first batch,
 which is embedded in the page HTML) and keeps a ReelMeta per shortcode in
 feed order, so upcoming reels can be scored before they reach the screen.
 
+The cover is the one frame of the video the scoring sees: OCR reads its
+text, perception/visual.py measures it, and with config.JEV_VISION on Jev
+gets it as an image input next to the caption, transcript and audio
+metadata. With vision on, the cover picked is the candidate closest to
+JEV_IMAGE_MAX_SIDE wide rather than the small one OCR needs.
+
 Where Instagram puts reels (checked 2026-09 with `python -m tools.inspect_feed`):
   data.xdt_api__v1__clips__home__connection_v2.edges[].node.media   organic feed
   data.xdt_injected_reels_units.ad_media_items[].items[]             ads
@@ -19,9 +25,12 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
+from config import JEV_IMAGE_MAX_SIDE, JEV_VISION
+
 FEED_KEYS = ("xdt_api__v1__clips__home__connection_v2",)
 AD_KEYS = ("xdt_injected_reels_units",)
 GRAPHQL_PATHS = ("/graphql/query", "/api/graphql")
+COVER_WIDTH = JEV_IMAGE_MAX_SIDE if JEV_VISION else 480  # Jev sees the frame: worth the bigger download
 
 DASH_NS = "{urn:mpeg:dash:schema:mpd:2011}"
 # `\w` would split Devanagari hashtags at vowel signs, so take everything up to whitespace.
@@ -157,8 +166,8 @@ def parse_dash_manifest(manifest: str) -> tuple[str | None, float | None]:
     return None, duration
 
 
-def pick_cover_url(image_versions: dict, target_width: int = 480) -> str | None:
-    """Choose a portrait cover close to target_width (large enough for OCR, small to fetch)."""
+def pick_cover_url(image_versions: dict, target_width: int = COVER_WIDTH) -> str | None:
+    """Choose a portrait cover close to target_width (large enough for OCR, or for Jev to see; small to fetch)."""
     candidates = [c for c in image_versions.get("candidates") or [] if c.get("url")]
     if not candidates:
         return None

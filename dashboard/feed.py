@@ -38,10 +38,10 @@ FEED_SQL = """
 SELECT i.session_id, i.seq, i.shown_at, i.code, i.url, i.creator, i.caption, i.hashtags, i.audio_type,
        i.audio_title, i.duration, i.like_count, i.comment_count, i.taken_at, i.inventory_source, i.is_ad,
        i.transcript, i.transcript_language, i.cover_text, i.score_basis, i.value_score, i.is_informational,
-       i.topic, i.summary, i.category, i.decision, i.dwell_seconds, i.liked, i.saved, i.followed, s.scorer
+       i.topic, i.summary, i.category, i.decision, i.dwell_seconds, i.liked, i.saved, i.followed, i.image_used, s.scorer
 FROM impressions i JOIN sessions s ON s.id = i.session_id
 WHERE s.account = ?
-ORDER BY i.session_id, i.seq
+ORDER BY s.started_at, i.session_id, i.seq
 """
 EXPORT_FIELDS = (
     "account", "bias", "persona", "phase", "session_id", "seq", "shown_at", "code", "url", "creator", "caption",
@@ -63,9 +63,11 @@ def load_feed(conn: sqlite3.Connection, account: str) -> tuple[list[dict], dict]
     scorer = rows[-1]["scorer"] if rows else None
     judged = [r for r in rows if r["scorer"] == scorer]
     since = curated_since(judged)
-    boundary = (since["session_id"], since["seq"]) if since else None
-    for row in rows:
-        row["phase"] = "curated" if boundary and (row["session_id"], row["seq"]) >= boundary else "warm-up"
+    # rows are in the order they were shown (sessions by start time), so curated is everything from that reel on
+    boundary = next((i for i, r in enumerate(rows) if (r["session_id"], r["seq"]) == (since["session_id"], since["seq"])),
+                    None) if since else None
+    for i, row in enumerate(rows):
+        row["phase"] = "curated" if boundary is not None and i >= boundary else "warm-up"
     return rows, {"since": since, "verdict": curation_verdict(judged), "scorer": scorer}
 
 
@@ -97,15 +99,51 @@ def top_creators(rows: list[dict], limit: int = 12) -> list[dict]:
     return out
 
 
-def reel_items(rows: list[dict], limit: int) -> list[dict]:
-    """The latest reels, newest first, as the panel lists them."""
-    latest = sorted(rows, key=lambda r: (r["shown_at"] or "", r["session_id"], r["seq"]), reverse=True)[:limit]
-    return [{
+def newest_first(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda r: (r["shown_at"] or "", r["session_id"], r["seq"]), reverse=True)
+
+
+def reel_item(r: dict) -> dict:
+    """One reel as the panel lists it."""
+    return {
         "account": r.get("account"), "session_id": r["session_id"], "seq": r["seq"], "shown_at": r["shown_at"],
         "creator": r["creator"], "url": r["url"], "category": r["category"], "topic": r["topic"],
         "summary": r["summary"] or " ".join((r["caption"] or "").split())[:160],
         "value_score": r["value_score"], "decision": r["decision"], "phase": r["phase"], "is_ad": bool(r["is_ad"]),
-    } for r in latest]
+        "image_used": r.get("image_used"),
+    }
+
+
+def reel_items(rows: list[dict], limit: int) -> list[dict]:
+    """The latest reels, newest first, as the panel lists them."""
+    return [reel_item(r) for r in newest_first(rows)[:limit]]
+
+
+def reel_page(rows: list[dict], *, day: str | None = None, phase: str | None = None, category: str | None = None,
+              account: str | None = None, query: str | None = None, offset: int = 0, limit: int = 50) -> dict:
+    """One page of the reels, newest first, after the filters: {"total", "offset", "limit", "items"}.
+    `category` is a category key, "_none" (not categorised) or "_ad"; `query` matches creator, topic, caption or summary."""
+    needle = (query or "").strip().lower()
+
+    def keep(r: dict) -> bool:
+        if phase and r["phase"] != phase or account and r.get("account") != account:
+            return False
+        if category == "_ad":
+            if not r["is_ad"]:
+                return False
+        elif category == "_none":
+            if r["category"] or r["is_ad"]:
+                return False
+        elif category and r["category"] != category:
+            return False
+        if day and local_day(r["shown_at"]) != day:
+            return False
+        return not needle or any(needle in (r.get(k) or "").lower() for k in ("creator", "topic", "caption", "summary"))
+
+    shown = newest_first([r for r in rows if keep(r)])
+    offset = max(0, offset)
+    return {"total": len(shown), "offset": offset, "limit": limit,
+            "items": [reel_item(r) for r in shown[offset:offset + limit]]}
 
 
 def local_day(shown_at: str | None) -> str | None:

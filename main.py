@@ -91,7 +91,7 @@ from database.db import (
     start_session,
     update_impression_score,
 )
-from perception import jev
+from perception import jev, visual
 from perception.local_evaluator import ScoringError, ensure_llm_ready, scorer_version
 
 MAX_STUCK_SCROLLS = 3
@@ -280,11 +280,17 @@ def describe(
         marks = f"(would {decision.planned})"
     if decision.explored:
         marks = (marks + " 🧭").strip()
+    if result is not None and result.image_used:
+        marks = (marks + " 🖼").strip()  # Jev saw the cover frame with the text
     if decision.action == "SKIP" and ready and decision.basis != "ad":
         marks = ("⚡ " + marks).strip()
     line = f"#{seq:<4} {_clip(who, 26):26} {kind:12} {_clip(verdict, 36):36} → {decision.action:10} {dwell:5.1f}s {marks}"
     if result and result.summary and decision.action != "SKIP":
         line += f"\n        “{_clip(result.summary, 110)}”"
+    if result and result.visual and decision.action != "SKIP":
+        v = result.visual
+        line += (f"\n        🖼 Cover frame: {visual.short(v)} · brightness {v['brightness']:.2f} · colour "
+                 f"{v['colourfulness']:.2f} · edges {v['edge_density']:.2f}")
     return line
 
 

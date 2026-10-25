@@ -187,11 +187,19 @@ python -m gradient update --lora   # …and continue each persona's LoRA adapter
   something unsupported. And a persona believing something doesn't make it true: that's what the "Real or not"
   phase is for.
 
-## DEMO: simulated sessions
+## Simulated sessions
 
-`python -m gradient.simulate` builds 14 days of **simulated** sessions for both personas, three a day, in their own
-database (`datasets/demo-sessions/reels.db`). The panel shows them only when Data is set to **Demo**, under a
-"DEMO — simulated sessions" banner on every tab; Live shows the real sessions and nothing else.
+`python -m gradient.simulate` builds 14 days of **simulated** sessions for both personas in their own database
+(`datasets/demo-sessions/reels.db`). The panel shows them only when Data is set to **Simulated**, under a
+"Simulated sessions" banner on every tab; Live shows the real sessions and nothing else. It refuses to replace an
+existing simulation unless given `--fresh`.
+
+`python -m gradient.simulate --append` adds sessions on the same days around the existing ones and changes none of
+them. The current database is the first simulation (84 sessions, 3,441 impressions, three a day) plus one appended
+batch (140 sessions, 13,719 impressions, five a day at other times of day): 17,160 impressions, 15,883 of them not
+ads. The recommender carries on from what the existing sessions taught it, replayed in time order; a reel the
+existing sessions served is never served again. Each appended session records its batch and its own generation
+time. Feeds and reports order sessions by when they started, not by id, so the appended sessions sit in their days.
 
 - **The recommender.** It serves the corpus's written reels, with news reels only from the day their story was
   published. It never sees the persona's scores: it learns topic and stance affinities from what the persona watches,
@@ -213,7 +221,8 @@ database (`datasets/demo-sessions/reels.db`). The panel shows them only when Dat
 python -m gradient.generate --account mlproject01 --reels 6000   # write reels for a feed (resumable)
 python -m gradient.news --days 14 --search --stories 1000        # reels about the last two weeks' real news
 python -m gradient.answers --account mlproject01 --n 3000        # written answers for the persona language model
-python -m gradient.simulate                                      # DEMO: 14 days of simulated sessions
+python -m gradient.simulate                                      # 14 days of simulated sessions (--fresh replaces)
+python -m gradient.simulate --append                             # more sessions on the same days, existing kept
 python -m gradient build              # first time: earlier corpus + sessions + labels + headlines + models
 python -m gradient update [--lora]    # every time after: new data → labels → retrain
 python -m gradient.lora --account mlproject01 [--resume]         # train / continue one adapter

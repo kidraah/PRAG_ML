@@ -17,8 +17,8 @@ import sqlite3
 import os
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reels.db")
-# The DEMO data source: simulated sessions (gradient/simulate.py), kept in their own database so they never mix
-# with genuine Instagram observations. The panel picks the source per request (Live / Demo).
+# The simulated data source ("demo"): simulated sessions (gradient/simulate.py), kept in their own database so they never mix
+# with genuine Instagram observations. The panel picks the source per request (Live / Simulated).
 DEMO_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "datasets", "demo-sessions", "reels.db")
 SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar("prag_source", default="live")
 
@@ -39,7 +39,7 @@ IMPRESSION_COLUMNS = (
     "reasoning", "error", "gate_keyword", "gate_audit", "score_seconds", "scored_at",
     "decision", "decision_basis", "explored", "dwell_seconds", "planned",
     "liked", "saved", "followed", "rule_score", "rule_reason", "ready_on_arrival",
-    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used",
+    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used", "visual",
 )
 # Columns added after the first release; init_db adds them to older databases.
 LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arrival", "INTEGER"),
@@ -48,12 +48,13 @@ LATER_COLUMNS = (("rule_score", "REAL"), ("rule_reason", "TEXT"), ("ready_on_arr
                  ("stance", "TEXT"), ("claim_kind", "TEXT"), ("source_type", "TEXT"), ("tone", "TEXT"),
                  # when Jev scores a reel, the local LLM's own score of it, written with the topic and summary
                  ("llm_score", "REAL"),
-                 ("image_used", "INTEGER"))  # Jev with vision on: 1 when the cover image was in the request
+                 ("image_used", "INTEGER"),  # Jev with vision on: 1 when the cover image was in the request
+                 ("visual", "TEXT"))  # the cover frame's measured descriptors, JSON (perception/visual.py)
 SCORE_COLUMNS = (
     "transcript", "transcript_language", "cover_text", "score_basis",
     "value_score", "is_informational", "topic", "summary", "reasoning",
     "error", "gate_keyword", "gate_audit", "score_seconds",
-    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used",
+    "stance", "claim_kind", "source_type", "tone", "llm_score", "image_used", "visual",
 )
 
 

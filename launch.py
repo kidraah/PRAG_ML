@@ -41,7 +41,7 @@ from ml import feed_model
 from tools import headtohead
 from database import accounts as account_store
 from config import DAILY_ENGAGEMENT, DAILY_MAX_MINUTES, ENGAGEMENT_MODES, LLM_MODEL_NAME, MIN_BATTERY, SESSION_MINUTES
-from database.db import DEMO_DB_PATH, SOURCE, engaged_today, get_connection, init_db, list_accounts, minutes_today
+from database.db import DEMO_DB_PATH, SOURCE, current_db, engaged_today, get_connection, init_db, list_accounts, minutes_today
 from ml.scorer import ModelScorer
 from perception.local_evaluator import llm_serving
 from stories.digest import DIGEST_DIR
@@ -92,6 +92,29 @@ def cached(key: str, seconds: float, compute):
     value = compute()
     _cache[key] = (time.time(), value)
     return value
+
+
+def feed_rows(account: str | None) -> list[dict]:
+    """Every reel the account (None: every account) was shown, with its phase, kept until the database changes, so
+    paging through 12,000 reels doesn't reload them for every page."""
+    path = current_db()
+    stamp = tuple(os.path.getmtime(f) if os.path.exists(f) else 0 for f in (path, path + "-wal"))
+    key = f"feed-rows|{path}|{account}"
+    hit = _cache.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    conn = get_connection()
+    try:
+        if account:
+            rows, _ = feed_study.load_feed(conn, account)
+            for row in rows:
+                row["account"] = account
+        else:
+            rows = [r for _a, found, _s in feed_study.all_feeds(conn) for r in found]
+    finally:
+        conn.close()
+    _cache[key] = (stamp, rows)
+    return rows
 
 
 def account_status(account: str) -> dict:
@@ -363,7 +386,8 @@ class Panel(BaseHTTPRequestHandler):
                 SOURCE.reset(token)
         self._handle({"/api/state": self.state, "/api/output": self.output, "/api/digest": self.digest,
                       "/api/report": self.report, "/api/schedules": self.schedules, "/api/bias": self.bias,
-                      "/api/feed": self.feed, "/api/accounts": self.account_list, "/api/h2h": self.h2h,
+                      "/api/feed": self.feed, "/api/feed/reels": self.feed_reels, "/api/feed/reel": self.feed_reel,
+                      "/api/accounts": self.account_list, "/api/h2h": self.h2h,
                       "/api/demo/sessions": self.demo_sessions, "/api/demo/log": self.demo_log,
                       **gradient_api.GET}, url.path, query)
 
@@ -450,6 +474,44 @@ class Panel(BaseHTTPRequestHandler):
             return info
         finally:
             conn.close()
+
+    def feed_reels(self, query: dict) -> dict:
+        """One page of every reel shown (newest first), filtered by day, phase, category, account or text."""
+        account = None if query.get("scope") == "all" else checked_account(query.get("account"))
+        day = query.get("day") or None
+        if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("day must look like 2026-10-14")
+        who = query.get("who") or None
+        if who and who not in active_accounts():
+            raise ValueError("Unknown account")
+        return feed_study.reel_page(feed_rows(account), day=day, phase=query.get("phase") or None,
+                                    category=query.get("cat") or None, account=who, query=(query.get("q") or "")[:100],
+                                    offset=int(query.get("offset") or 0), limit=min(int(query.get("limit") or 50), 200))
+
+    def feed_reel(self, query: dict) -> dict:
+        """Everything recorded about one reel shown: what was perceived, how it was judged, what was done."""
+        try:
+            session, seq = int(query.get("session", "")), int(query.get("seq", ""))
+        except ValueError:
+            raise ValueError("Pick a reel.") from None
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT i.*, s.account, s.scorer, s.model FROM impressions i JOIN sessions s ON "
+                               "s.id = i.session_id WHERE i.session_id = ? AND i.seq = ?", (session, seq)).fetchone()
+            if row is None:
+                raise ValueError("No such reel.")
+            out = {k: row[k] for k in row.keys()}
+            simulated = SOURCE.get() == "demo"
+            if simulated:
+                source = conn.execute("SELECT * FROM demo_items WHERE code = ?", (row["code"],)).fetchone()
+                out["source"] = dict(source) if source else None
+                out["url"] = out["source"]["news_url"] if source and source["news_url"] else None
+        finally:
+            conn.close()
+        out["visual"] = json.loads(out["visual"]) if out.get("visual") else None
+        out["simulated"] = simulated
+        return out
 
     def _feed_export(self, query: dict) -> None:
         """The account's dataset as a download: the curated feed or everything, as JSONL or CSV."""
@@ -547,27 +609,27 @@ class Panel(BaseHTTPRequestHandler):
     @staticmethod
     def _demo_conn():
         if not os.path.exists(DEMO_DB_PATH):
-            raise ValueError("No demo sessions yet: run python -m gradient.simulate")
+            raise ValueError("No simulated sessions yet: run python -m gradient.simulate")
         conn = get_connection(DEMO_DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
 
     def demo_sessions(self, query: dict) -> dict:
-        """DEMO: every simulated session of the account, by simulated day."""
+        """Every simulated session of the account, by simulated day."""
         account = checked_account(query.get("account"))
         conn = self._demo_conn()
         try:
             days: dict[str, list] = {}
             for r in conn.execute("SELECT * FROM demo_sessions WHERE account = ? ORDER BY simulated_start", (account,)):
                 days.setdefault(r["simulated_date"], []).append({
-                    "id": r["session_id"], "start": r["simulated_start"], "end": r["simulated_end"],
+                    "id": r["session_id"], "start": r["simulated_start"], "end": r["simulated_end"], "kind": r["kind"],
                     "generated_at": r["generated_at"], **json.loads(r["stats"] or "{}")})
             return {"account": account, "days": [{"date": d, "sessions": v} for d, v in days.items()]}
         finally:
             conn.close()
 
     def demo_log(self, query: dict) -> dict:
-        """DEMO: one simulated session's console log, each line with its simulated time."""
+        """One simulated session's console log, each line with its simulated time."""
         try:
             session = int(query.get("session", ""))
         except ValueError:
@@ -576,7 +638,7 @@ class Panel(BaseHTTPRequestHandler):
         try:
             info = conn.execute("SELECT * FROM demo_sessions WHERE session_id = ?", (session,)).fetchone()
             if info is None:
-                raise ValueError("No such demo session.")
+                raise ValueError("No such simulated session.")
             lines = [{"at": r["at"], "line": r["line"]} for r in
                      conn.execute("SELECT at, line FROM demo_log WHERE session_id = ? ORDER BY n", (session,))]
             return {"session": dict(info), "lines": lines}
@@ -991,6 +1053,19 @@ table.data th.num { font: 500 10px var(--display); letter-spacing: 1.2px; }
 .reel-row .when { color: var(--muted); font: 12px var(--mono); }
 .reel-row .num { display: flex; gap: 12px; justify-content: flex-end; color: var(--muted); font: 12px var(--mono); }
 .reel-row a { overflow-wrap: anywhere; }
+.reel-row { cursor: pointer; }
+.reel-row:hover, .reel-row.open { background: var(--hover); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 18px; margin-top: 16px; }
+.inspect { border: 2px solid var(--line); border-top: 0; background: var(--panel); padding: 14px 18px 18px; margin-bottom: 8px;
+           display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 4px 30px; font-size: 15px; }
+.inspect h4 { font: 500 10px var(--display); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); margin: 12px 0 4px; }
+.inspect p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.inspect dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; }
+.inspect dt { color: var(--muted); font: 500 12px var(--mono); }
+.inspect dd { margin: 0; font: 500 13px var(--mono); overflow-wrap: anywhere; }
+.swatches { display: flex; gap: 6px; margin-top: 6px; }
+.swatches i { display: block; height: 22px; border: 1px solid var(--line); }
+@media (max-width: 900px) { .inspect { grid-template-columns: minmax(0, 1fr); } }
 #feed-scope { margin-bottom: 16px; }
 .persona-text { white-space: pre-wrap; max-width: 80ch; color: var(--muted); }
 .h2h-field { margin: 10px 0 0; max-width: 90ch; }
@@ -1123,7 +1198,7 @@ body.demo .deck:not(#demo-deck) { display: none; }
         <select id="account" aria-label="Account"></select>
         <button class="text-btn" id="bias-pill" title="Edit the persona" hidden></button>
         <span class="island-label">Data</span>
-        <select id="source" aria-label="Data source"><option value="live">Live</option><option value="demo">Demo</option></select>
+        <select id="source" aria-label="Data source"><option value="live">Live</option><option value="demo">Simulated</option></select>
       </div>
 <!--GRADIENT_ISLAND-->
       <div class="island">
@@ -1137,7 +1212,7 @@ body.demo .deck:not(#demo-deck) { display: none; }
     <p class="notice" id="no-account" hidden>No active account yet. <button id="go-accounts">Add one on the Accounts tab.</button></p>
 
     <main>
-      <div class="demo-banner" id="demo-banner" role="status" hidden><b>DEMO — simulated sessions.</b>
+      <div class="demo-banner" id="demo-banner" role="status" hidden><b>Simulated sessions.</b>
         Run, Feed, Digest and Report show 14 days of simulated sessions for both personas, under simulated dates.
         Nothing here was observed on Instagram; switch Data to Live for the real sessions.</div>
       <section id="tab-run">
@@ -1275,8 +1350,12 @@ body.demo .deck:not(#demo-deck) { display: none; }
             <select id="f-cat" aria-label="Category"></select>
             <select id="f-phase" aria-label="Phase"><option value="">Warm-up and curated</option>
               <option value="curated">Curated feed only</option><option value="warm-up">Warm-up only</option></select>
+            <input type="search" id="f-q" placeholder="Search creator, topic, caption" aria-label="Search the reels">
             <span class="hint" id="f-count"></span></div>
+          <p class="hint">Click a reel to inspect what was perceived, how it was judged and what was done.</p>
           <div id="reels"></div>
+          <div class="pager" id="f-pager" hidden><button class="btn" id="f-prev">Newer</button>
+            <span class="hint" id="f-page"></span><button class="btn" id="f-next">Older</button></div>
         </div>
       </section>
 
@@ -1662,6 +1741,7 @@ async function answerPrompt(cancel) {
 // One line per reel, as main.py's describe() prints it, then (for reels it didn't skip) the summary line
 const REEL = /^#(\d+)\s+(\S+)\s+(.*?)\s*→\s+(SKIP|WATCH|FULL_WATCH|REWATCH|OBSERVE)\s+([\d.]+)s\s*(.*)$/;
 const SAID = /^ {8}“(.*)”\s*$/;
+const FRAME = /^ {8}🖼 (.*)$/;  // the cover frame's descriptors, under the reel
 const KIND = /^([a-z_?]+) (\d+)s(?:\s+|$)(.*)$/;
 const NOTE = /^\s*\p{Extended_Pictographic}️?\s+(.*)$/u;  // the run's milestones start with an emoji
 const QUIET = /Database initialised|^Log: |python -m /;
@@ -1688,6 +1768,7 @@ function engagementOf(marks) {
   const would = /\(would ([a-z,]+)\)/.exec(marks);
   if (would) notes.push("Dry run: would " + would[1].split(",").join(", "));
   if (marks.includes("🧭")) notes.push("Watched to explore");
+  if (marks.includes("🖼")) notes.push("Jev saw the cover frame with the text");
   return {text: notes.join(". "), liked: done.includes("liked")};
 }
 
@@ -1746,6 +1827,8 @@ function addToStream(text, animate) {
     } else if ((m = SAID.exec(line)) && live.last && live.last.summary) {
       live.last.summary.textContent = `“${m[1]}”`;
       live.last.summary.hidden = false;
+    } else if ((m = FRAME.exec(line)) && live.last && live.last.summary) {
+      live.last.summary.after(h("div", {class: "extras", text: m[1]}));
     } else if ((m = NOTE.exec(line)) && !QUIET.test(m[1])) {
       if (live.last && live.last.classList.contains("v-note")) {
         live.last.append(h("div", {text: m[1]}));  // milestones in a row read as one block, oldest first
@@ -1980,7 +2063,7 @@ function renderFeed() {
   drawCreators();
   fillFilters();
   drawProgress();
-  drawReels();
+  loadReels(0);
 }
 
 // ── Day by day: the account's reels per day and how many fit the persona ──
@@ -2009,7 +2092,7 @@ function drawProgress() {
     const hit = svg("rect", {class: "hit", x: P.l + i * bw, y: P.t, width: bw, height: H - P.t - P.b, tabindex: 0});
     hit.append(svg("title", {}, `${d.day}: ${d.fit} of ${d.reels} reels fit the persona (${pct(share)}), ` +
       `${d.watched} watched, ${d.liked} liked`));
-    hit.onclick = () => { $("f-day").value = d.day; loadFeed(); };
+    hit.onclick = () => { $("f-day").value = d.day; loadReels(0); $("reels").scrollIntoView({behavior: "smooth", block: "start"}); };
     s.append(hit);
   });
   $("progress-chart").replaceChildren(s);
@@ -2021,7 +2104,7 @@ function drawProgress() {
       h("td", {class: "num", text: v})))));
 }
 
-// ── DEMO: the simulated sessions on the Run tab ──
+// ── The simulated sessions on the Run tab ──
 
 const demoState = {days: [], day: null, session: null, timer: null, lines: []};
 
@@ -2033,7 +2116,7 @@ function applySource() {
 }
 
 function renderDemoStatus() {
-  $("run-state").textContent = "Demo";
+  $("run-state").textContent = "Simulated";
   $("run-state").className = "state";
   $("run-status").textContent = demoState.session ? `Simulated session ${demoState.session.session_id}, ` +
     `simulated ${localTime(demoState.session.simulated_start)}` : "Simulated sessions: pick a day and a session.";
@@ -2057,7 +2140,8 @@ function drawDemoList() {
   const day = demoState.days.find((d) => d.date === demoState.day);
   $("demo-list").replaceChildren(...(day ? day.sessions : []).map((x) => {
     const b = h("button", {class: demoState.session && demoState.session.session_id === x.id ? "on" : null},
-      `${new Date(x.start.replace(" ", "T") + "Z").toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})} · ${x.reels} reels`,
+      `${new Date(x.start.replace(" ", "T") + "Z").toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})} · ${x.reels} reels` +
+        (x.kind ? ` · ${x.kind}` : ""),
       h("small", {text: `watched ${x.WATCH + x.FULL_WATCH + x.REWATCH} · ❤ ${x.liked} · 🔖 ${x.saved} · ➕ ${x.followed}`}));
     b.onclick = () => openDemoSession(x.id, false);
     return b;
@@ -2089,10 +2173,10 @@ function showDemoLog(replay) {
     addToStream(lines.map((l) => l.line).join("\n"), false);
     return;
   }
-  let i = 0;  // a replay: the lines arrive in simulated order, twenty times faster than they happened
+  let i = 0;  // a replay: the lines arrive in simulated order, thirty times faster than they happened
   const t0 = Date.parse(lines[0].at.replace(" ", "T") + "Z"), started = Date.now();
   demoState.timer = setInterval(() => {
-    const now = t0 + (Date.now() - started) * 20, batch = [];
+    const now = t0 + (Date.now() - started) * 30, batch = [];
     while (i < lines.length && Date.parse(lines[i].at.replace(" ", "T") + "Z") <= now) batch.push(lines[i++]);
     if (batch.length) {
       box.append(batch.map(stamp).join(""));
@@ -2289,26 +2373,92 @@ function fillFilters() {
     ...Object.entries(feedData.categories).map(([key, label]) => h("option", {value: key, text: label})),
     h("option", {value: "_none", text: "Not categorised"}), h("option", {value: "_ad", text: "Ads"}));
   select.value = keep;
-  const names = [...new Set(feedData.reels.map((r) => r.account))].sort();
+  const names = (feedData.accounts || []).map((a) => a.account).sort();
   accounts.replaceChildren(h("option", {value: "", text: "Every account"}),
     ...names.map((a) => h("option", {value: a, text: "@" + a})));
   accounts.value = names.includes(keepAccount) ? keepAccount : "";
   accounts.hidden = feedData.scope !== "all";
 }
 
-function drawReels() {
-  const cat = $("f-cat").value, phase = $("f-phase").value, all = feedData.scope === "all";
-  const who = all ? $("f-acct").value : "";
-  const shown = feedData.reels.filter((r) => (!phase || r.phase === phase) && (!who || r.account === who) &&
-    (!cat || (cat === "_ad" ? r.is_ad : cat === "_none" ? !r.category && !r.is_ad : r.category === cat)));
-  $("f-count").textContent = `${shown.length} of the latest ${feedData.reels.length} reels`;
-  $("reels").replaceChildren(...shown.slice(0, 250).map((r) => h("div", {class: "reel-row"},
-    h("span", {class: "when"}, localTime(r.shown_at), all ? h("span", {class: "to", text: "to @" + r.account}) : null),
-    link(r.url, "@" + (r.creator || "?")),
-    h("span", {}, h("span", {class: "tag-cat", text: r.is_ad ? "Ad" : r.category ? feedData.categories[r.category] : "Not categorised"})),
-    h("span", {}, r.topic ? h("strong", {text: r.topic + ": "}) : null, r.summary || ""),
-    h("span", {class: "num"}, h("span", {text: STAMPS[r.decision] || ""}),
-      h("span", {text: r.value_score == null ? "" : Number(r.value_score).toFixed(2)})))));
+// ── Every reel shown: a page at a time from the server (12,000+ reels stay quick), each one inspectable ──
+
+const reelPage = {offset: 0, limit: 50, total: 0, open: null, seq: 0};
+
+async function loadReels(offset) {
+  const all = feedData.scope === "all", q = new URLSearchParams();
+  if (all) q.set("scope", "all"); else q.set("account", account());
+  const day = all ? "" : $("f-day").value, who = all ? $("f-acct").value : "";
+  for (const [k, v] of [["day", day], ["who", who], ["cat", $("f-cat").value], ["phase", $("f-phase").value],
+                        ["q", $("f-q").value.trim()]]) if (v) q.set(k, v);
+  q.set("offset", Math.max(0, offset));
+  q.set("limit", reelPage.limit);
+  const mine = ++reelPage.seq;  // a slower, older request mustn't draw over a newer one
+  let d;
+  try { d = await api("/api/feed/reels?" + q); } catch (e) { toast(e.message, true); return; }
+  if (mine !== reelPage.seq) return;
+  Object.assign(reelPage, {offset: d.offset, total: d.total, open: null});
+  drawReels(d.items);
+}
+
+function drawReels(items) {
+  const all = feedData.scope === "all", {offset, total, limit} = reelPage;
+  $("f-count").textContent = total ? `${(offset + 1).toLocaleString()}–${Math.min(offset + limit, total).toLocaleString()} of ` +
+    `${total.toLocaleString()} reels` : "No reels match";
+  $("f-pager").hidden = total <= limit;
+  $("f-page").textContent = `Page ${Math.floor(offset / limit) + 1} of ${Math.max(1, Math.ceil(total / limit))}`;
+  $("f-prev").disabled = offset === 0;
+  $("f-next").disabled = offset + limit >= total;
+  $("reels").replaceChildren(...items.map((r) => {
+    const row = h("div", {class: "reel-row", tabindex: "0", role: "button", "aria-expanded": "false"},
+      h("span", {class: "when"}, localTime(r.shown_at), all ? h("span", {class: "to", text: "to @" + r.account}) : null),
+      SOURCE === "demo" || !r.url ? h("span", {text: "@" + (r.creator || "?")}) : link(r.url, "@" + (r.creator || "?")),
+      h("span", {}, h("span", {class: "tag-cat", text: r.is_ad ? "Ad" : r.category ? feedData.categories[r.category] : "Not categorised"})),
+      h("span", {}, r.topic ? h("strong", {text: r.topic + ": "}) : null, r.summary || ""),
+      h("span", {class: "num"}, h("span", {text: (r.image_used ? "🖼 " : "") + (STAMPS[r.decision] || "")}),
+        h("span", {text: r.value_score == null ? "" : Number(r.value_score).toFixed(2)})));
+    const toggle = (e) => { if (e.target.closest("a")) return; inspectReel(row, r); };
+    row.onclick = toggle;
+    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(e); } };
+    return row;
+  }));
+}
+
+async function inspectReel(row, r) {
+  const open = row.nextElementSibling && row.nextElementSibling.classList.contains("inspect");
+  document.querySelectorAll("#reels .inspect").forEach((x) => x.remove());
+  document.querySelectorAll("#reels .reel-row.open").forEach((x) => { x.classList.remove("open"); x.setAttribute("aria-expanded", "false"); });
+  if (open) return;
+  let d;
+  try { d = await api(`/api/feed/reel?session=${r.session_id}&seq=${r.seq}`); } catch (e) { toast(e.message, true); return; }
+  row.classList.add("open");
+  row.setAttribute("aria-expanded", "true");
+  const text = (title, value) => value ? [h("h4", {text: title}), h("p", {text: value})] : [];
+  const facts = (pairs) => h("dl", {}, ...pairs.filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .flatMap(([k, v]) => [h("dt", {text: k}), h("dd", {text: String(v)})]));
+  const v = d.visual, sim = d.simulated;
+  const vision = v ? [h("h4", {text: "Cover frame, measured"}), facts([
+      ["size", `${v.width}×${v.height}${v.portrait ? " (portrait)" : ""}`], ["brightness", v.brightness], ["contrast", v.contrast],
+      ["saturation", v.saturation], ["colourfulness", v.colourfulness], ["edge density", v.edge_density]]),
+    h("div", {class: "swatches"}, ...(v.palette || []).map((c) => h("i", {style: `background:${c.hex};width:${Math.max(18, c.share * 160)}px`, title: `${c.hex} ${gPct(c.share)}`})))]
+    : [h("h4", {text: "Cover frame"}), h("p", {class: "hint", text: sim ? "None: a simulated session's reels are written text, with no image."
+        : "Not measured: the cover wasn't downloaded for this reel (sessions before cover measuring, or OCR and vision both off)."})];
+  const src = d.source && d.source.news_title ? [h("h4", {text: "Written about this article"}),
+    h("p", {}, d.source.news_url ? link(d.source.news_url, d.source.news_title) : d.source.news_title,
+      ` · ${d.source.news_source || ""} ${d.source.news_date ? "· " + d.source.news_date.slice(0, 10) : ""}`)] : [];
+  const panel = h("div", {class: "inspect"},
+    h("div", {}, ...text("Caption", d.caption), ...text("Spoken (transcript)", d.transcript), ...text("Text on the cover", d.cover_text),
+      ...text("Summary", d.summary), ...text("Why this score", d.reasoning), ...src),
+    h("div", {}, h("h4", {text: sim ? "Simulated impression" : "Impression"}), facts([
+        ["account", "@" + d.account], ["session", `${d.session_id} · reel #${d.seq}`],
+        [sim ? "simulated time" : "shown", localTime(d.shown_at)], ["creator", d.creator && "@" + d.creator],
+        ["audio", [d.audio_type, d.duration && clock(d.duration)].filter(Boolean).join(", ")],
+        ["topic", d.topic], ["category", d.category && (feedData.categories[d.category] || d.category)],
+        ["stance", d.stance], ["score", d.value_score == null ? null : Number(d.value_score).toFixed(2)], ["scored by", d.scorer],
+        ["image input", d.image_used == null ? (sim ? "no image" : "vision off") : d.image_used ? "yes: Jev saw the cover" : "no: text only"],
+        ["decision", STAMPS[d.decision] || d.decision], ["on screen", d.dwell_seconds == null ? null : d.dwell_seconds + " s"],
+        ["engagement", ["liked", "saved", "followed"].filter((k) => d[k]).join(", ") || "none"], ["error", d.error]]),
+      ...vision));
+  row.after(panel);
 }
 
 async function exportFeed(phase, format) {
@@ -2864,7 +3014,7 @@ function init() {
   $("demo-day").onchange = () => { demoState.day = $("demo-day").value; demoState.session = null; drawDemoList(); };
   $("btn-demo-replay").onclick = () => { setView("reels"); showDemoLog(true); };
   $("btn-demo-show").onclick = () => showDemoLog(false);
-  $("f-day").onchange = loadFeed;
+  $("f-day").onchange = () => loadReels(0);
 
   $("btn-run").onclick = () => start(false);
   $("btn-digest").onclick = () => start(true);
@@ -2891,8 +3041,8 @@ function init() {
   $("btn-export-curated").onclick = () => exportFeed("curated", "jsonl");
   $("btn-export-curated-csv").onclick = () => exportFeed("curated", "csv");
   $("btn-export-all").onclick = () => exportFeed("all", "jsonl");
-  $("f-cat").onchange = drawReels;
-  $("f-acct").onchange = drawReels;
+  $("f-cat").onchange = () => loadReels(0);
+  $("f-acct").onchange = () => loadReels(0);
   $("btn-train").onclick = trainFeedModel;
   $("h2h-persona").addEventListener("change", () => { h2hIndex = 0; renderH2H(); });
   $("h2h-watch").onclick = () => labelH2H("watch");
@@ -2918,7 +3068,10 @@ function init() {
   const scope = store.get("feed-scope", "account");
   document.querySelector(`input[name="feed-scope"][value="${scope === "all" ? "all" : "account"}"]`).checked = true;
   $("feed-scope").addEventListener("change", () => { store.set("feed-scope", feedScope()); loadFeed(); });
-  $("f-phase").onchange = drawReels;
+  $("f-phase").onchange = () => loadReels(0);
+  { let t = null; $("f-q").oninput = () => { clearTimeout(t); t = setTimeout(() => loadReels(0), 300); }; }
+  $("f-prev").onclick = () => loadReels(reelPage.offset - reelPage.limit);
+  $("f-next").onclick = () => loadReels(reelPage.offset + reelPage.limit);
   $("btn-acc-add").onclick = addAccount;
   $("acc-pass-save").onclick = () => savePassword(false);
   $("acc-pass-forget").onclick = () => savePassword(true);

@@ -83,7 +83,7 @@ def lora_section(account: str, history: list[dict]) -> list[str]:
 
 
 def demo_section() -> list[str]:
-    """DEMO: the simulated sessions (gradient/simulate.py), labelled as such."""
+    """The simulated sessions (gradient/simulate.py), labelled as such."""
     import sqlite3
 
     from database.db import DEMO_DB_PATH
@@ -91,7 +91,7 @@ def demo_section() -> list[str]:
     if not os.path.exists(DEMO_DB_PATH):
         return []
     demo = sqlite3.connect(DEMO_DB_PATH)
-    out = ["## DEMO — simulated sessions", "",
+    out = ["## Simulated sessions", "",
            "Not Instagram observations: 14 days of sessions simulated by `python -m gradient.simulate` from the "
            "corpus's written reels, Jev's scores and the session engagement policy, in their own database. Dates are "
            "simulated; each session also records when it was generated.", "",
@@ -107,9 +107,10 @@ def demo_section() -> list[str]:
         if days:
             out.append(f"| @{account} | {days[0][0]} to {days[-1][0]} | {n[0]} | {n[1]:,} | {n[2]:,} | {n[3]:,} | "
                        f"{days[0][1]:.0%} → {days[-1][1]:.0%} |")
-    generated = demo.execute("SELECT MIN(generated_at) FROM demo_sessions").fetchone()[0]
+    batches = demo.execute("SELECT COALESCE(batch, 'base'), MIN(generated_at), COUNT(*) FROM demo_sessions GROUP BY 1 "
+                           "ORDER BY 2").fetchall()
     demo.close()
-    return out + ["", f"Generated {generated} UTC.", ""]
+    return out + ["", "Generated: " + "; ".join(f"{name}, {n} sessions, {at} UTC" for name, at, n in batches) + ".", ""]
 
 
 def build(conn) -> str:

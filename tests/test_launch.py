@@ -328,9 +328,13 @@ class HTTPTests(unittest.TestCase):
                 db.log_impression({"session_id": sid, "seq": seq, "code": f"c{path[-7:]}{seq}", "creator": "x",
                                    "score_basis": "score", "value_score": 0.9, "decision": "WATCH"}, conn)
             if path == demo_path:
-                conn.execute("INSERT INTO demo_sessions VALUES (?, 'acct', '2026-10-14', '2026-10-14 03:00:00', "
-                             "'2026-10-14 03:20:00', '2026-10-25 10:00:00', 's', 0.5, ?)", (sid, json.dumps({"reels": 3})))
-                conn.execute("INSERT INTO demo_log VALUES (?, 0, '2026-10-14 03:00:00', '🧪  DEMO — simulated session')", (sid,))
+                conn.execute("INSERT INTO demo_sessions (session_id, account, simulated_date, simulated_start, "
+                             "simulated_end, kind, generated_at, seed, temperature, stats) VALUES (?, 'acct', "
+                             "'2026-10-14', '2026-10-14 03:00:00', '2026-10-14 03:20:00', 'manual', "
+                             "'2026-10-25 10:00:00', 's', 0.5, ?)", (sid, json.dumps({"reels": 3})))
+                conn.execute("INSERT INTO demo_log VALUES (?, 0, '2026-10-14 03:00:00', '🧪  Simulated session')", (sid,))
+                conn.execute("INSERT INTO demo_items VALUES (?, 'item', 'A real story', 'The Hindu', "
+                             "'https://www.thehindu.com/x', '2026-10-13')", (f"c{path[-7:]}0",))
             conn.commit()
             conn.close()
         live = json.loads(self.request("GET", "/api/feed?account=acct")[2])
@@ -341,10 +345,28 @@ class HTTPTests(unittest.TestCase):
         days = json.loads(self.request("GET", "/api/demo/sessions?account=acct")[2])["days"]
         self.assertEqual((days[0]["date"], days[0]["sessions"][0]["reels"]), ("2026-10-14", 3))
         log = json.loads(self.request("GET", f"/api/demo/log?session={days[0]['sessions'][0]['id']}")[2])
-        self.assertIn("DEMO", log["lines"][0]["line"])
+        self.assertIn("Simulated", log["lines"][0]["line"])
+        self.assertEqual(days[0]["sessions"][0]["kind"], "manual")
         self.assertEqual(log["session"]["generated_at"], "2026-10-25 10:00:00")  # kept apart from the simulated time
         self.assertEqual(self.request("GET", "/api/demo/log?session=999")[0], 400)
         self.assertEqual(self.request("GET", "/api/feed?account=acct&day=yesterday")[0], 400)
+        # every reel, a page at a time, from the selected source; and one reel in full
+        page = json.loads(self.request("GET", "/api/feed/reels?account=acct&limit=2", headers={"X-PRAG-Source": "demo"})[2])
+        self.assertEqual((page["total"], len(page["items"]), page["offset"]), (3, 2, 0))
+        rest = json.loads(self.request("GET", "/api/feed/reels?account=acct&limit=2&offset=2",
+                                       headers={"X-PRAG-Source": "demo"})[2])
+        self.assertEqual(len(rest["items"]), 1)
+        live_page = json.loads(self.request("GET", "/api/feed/reels?account=acct")[2])
+        self.assertEqual(live_page["total"], 1)
+        none = json.loads(self.request("GET", "/api/feed/reels?account=acct&q=nothing-like-this",
+                                       headers={"X-PRAG-Source": "demo"})[2])
+        self.assertEqual(none["total"], 0)
+        first = page["items"][-1]
+        reel = json.loads(self.request("GET", f"/api/feed/reel?session={first['session_id']}&seq=0",
+                                       headers={"X-PRAG-Source": "demo"})[2])
+        self.assertTrue(reel["simulated"])
+        self.assertEqual((reel["source"]["news_title"], reel["url"]), ("A real story", "https://www.thehindu.com/x"))
+        self.assertEqual(self.request("GET", "/api/feed/reel?session=1&seq=99", headers={"X-PRAG-Source": "demo"})[0], 400)
 
     def test_train_the_feed_model(self):
         launch.Panel.runner._launch.return_value = {"key": "m"}

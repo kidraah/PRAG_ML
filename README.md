@@ -89,19 +89,28 @@ and why this way rather than another, is in [docs/TRAINING.md](docs/TRAINING.md)
 - **Persona language models.** A LoRA adapter per persona on Qwen3 4B (4-bit, MLX), trained on its feed, its
   reactions, and about 3,000 written answers and debate turns that interpret its reels and cite them. It runs
   entirely on the Mac.
-- **DEMO: simulated sessions.** Set Data to Demo in the panel for 14 days of *simulated* sessions for both personas
-  (`python -m gradient.simulate`): a recommender that learns from the persona's behaviour, the real engagement policy,
-  timestamped logs you can replay, the feed day by day, and daily digests, all under a "DEMO — simulated sessions"
-  banner and in their own database. Live shows only the real sessions.
+- **Simulated sessions.** Set Data to Simulated in the panel for 14 days of *simulated* sessions for both personas
+  (`python -m gradient.simulate`, then `--append` to add more around the existing ones without touching them):
+  about 17,000 impressions from a recommender that learns from the persona's behaviour, the real engagement policy,
+  timestamped logs you can replay, the feed day by day (paged, with a reel inspector), and daily digests, all under a
+  "Simulated sessions" banner and in their own database. Each session keeps the time it was really generated and
+  the batch that made it. Live shows only the real sessions.
 - **Ask.** *Chat* with a persona, run a *debate* between both on a topic of your choice (with a neutral moderator),
-  ask *one question, two worldviews*, or use the *feed predictor*: paste any reel and see whether each persona would
-  watch it and whose feed it would land in. Answers retrieve only from the persona's own feed, ranked by its
-  preference model, and every citation is checked.
+  or use one of four analyses: *framing* (one question, two worldviews, and the words each feed uses for the topic),
+  *blind spots* (show a persona reels from the side its feed leans away from and measure how its answer moves),
+  *echo chambers* (how far apart the two feeds grow, day by day) and the *engagement predictor* (whether each
+  persona would watch a reel, and the words that decided it). Answers retrieve only from the persona's own feed,
+  ranked by its preference model; the persona interprets the reels in its own voice (a draft that copies their
+  wording is rewritten), and every citation is checked.
 - **Grows over time.** `python -m gradient update` takes in new session reels, labels them, retrains, and compares
   every version on the same frozen evaluation set. `--lora` continues each adapter from the last one.
-- **Jev can see covers.** Jev 1.13 and 1.14 accept images (TypeSafe, 14 October 2026). With `JEV_VISION` on, each
-  reel's cover goes to Jev as an inline JPEG through OpenRouter's Decisions API, prepared to Jev's size limits. If
-  the image is rejected, the call is repeated with text only and the reason is recorded.
+- **Jev can see covers.** Jev 1.13 and 1.14 accept images (TypeSafe, 14 October 2026). With `JEV_VISION` on (it's
+  off by default: it costs more and sends the images off the Mac), each reel's cover goes to Jev as an inline JPEG
+  through OpenRouter's Decisions API, in the same request as the caption, transcript, on-screen text and audio
+  metadata, prepared to Jev's size limits. If the image is rejected, the call is repeated with text only and the
+  reason is recorded. Every downloaded cover is also measured locally (`perception/visual.py`: brightness,
+  contrast, colourfulness, how busy it is, its palette); the descriptors are stored with the reel, shown in the
+  session log and the Feed tab's reel inspector. One frame per reel, the cover: not the video.
 
 ```bash
 python -m gradient status                       # the corpus, per persona

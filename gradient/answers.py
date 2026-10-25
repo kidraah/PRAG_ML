@@ -15,6 +15,7 @@ Every task draws its reels from one split, so answers stay on their side of
 train / validation / test. lora.build_examples trains on them.
 
     python -m gradient.answers --account mlproject01 --n 3000
+    python -m gradient.answers --account mlproject01 --n 800 --batch demo-sessions-append-2026-10-25-s2
 """
 
 import argparse
@@ -70,11 +71,12 @@ def reel(n: int, item: dict) -> str:
     return f"[{n}] {item.get('creator') or item.get('source_name') or 'a page'}: {item['text'][:450]}"
 
 
-def tasks(conn, account: str, n: int, seed: int = 3) -> list[dict]:
-    """n tasks: reels from this feed sharing a story (or else a topic) and a split; some are debate turns."""
+def tasks(conn, account: str, n: int, seed: int = 3, batches: set[str] | None = None) -> list[dict]:
+    """n tasks: reels from this feed sharing a story (or else a topic) and a split; some are debate turns.
+    `batches`: anchor every task on a reel that joined the feed in one of these (the other reels can be any)."""
     rng = random.Random(f"{seed}|{account}")
-    rows = [dict(r) for r in conn.execute("SELECT i.* FROM feed f JOIN items i ON i.id = f.item_id WHERE f.account = ?",
-                                          (account,))]
+    rows = [dict(r) for r in conn.execute("SELECT i.*, f.batch AS feed_batch FROM feed f JOIN items i ON i.id = f.item_id "
+                                          "WHERE f.account = ?", (account,))]
     by_group, by_topic = {}, {}
     for r in rows:
         by_group.setdefault((r["group_id"], r["split"]), []).append(r)
@@ -84,7 +86,7 @@ def tasks(conn, account: str, n: int, seed: int = 3) -> list[dict]:
                             "AND t.action <> 'skip'", (account,)):
         rivals.setdefault(row["topic"] or "other", []).append(row["take"])
     done = {r[0] for r in conn.execute("SELECT id FROM answers WHERE account = ?", (account,))}
-    anchors = rows[:]
+    anchors = [r for r in rows if batches is None or r["feed_batch"] in batches]
     rng.shuffle(anchors)
     out = []
     for anchor in anchors:
@@ -118,11 +120,12 @@ def prompt(batch: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-async def run(account: str, n: int, parallel: int = 12, progress=print, max_spend: float = 1.5) -> dict:
+async def run(account: str, n: int, parallel: int = 12, progress=print, max_spend: float = 1.5,
+              batches: set[str] | None = None) -> dict:
     bias = biases.load(account)
     conn = store.connect()
     conn.executescript(TABLE)
-    todo = tasks(conn, account, n)
+    todo = tasks(conn, account, n, batches=batches)
     stats = {"done": 0, "failed": 0, "usd": 0.0}
     if not todo:
         conn.close()
@@ -170,9 +173,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Write the persona language model's grounded answers")
     parser.add_argument("--account", choices=store.ACCOUNTS)
     parser.add_argument("--n", type=int, default=3000)
+    parser.add_argument("--batch", action="append", help="anchor the answers on reels from this feed batch (repeatable)")
     args = parser.parse_args()
     for account in [args.account] if args.account else store.ACCOUNTS:
-        asyncio.run(run(account, args.n, progress=lambda m: print(m, flush=True)))
+        asyncio.run(run(account, args.n, progress=lambda m: print(m, flush=True),
+                        batches=set(args.batch) if args.batch else None))
 
 
 if __name__ == "__main__":

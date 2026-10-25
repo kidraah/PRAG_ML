@@ -19,24 +19,24 @@ Languages: English 22,711, Hinglish 10,948, Hindi 10,848.
 
 Right-leaning, security and infrastructure first; cricket, gadgets, Hindi comedy, street food.
 
-Feed: 606 demo_session, 13,147 generator, 600 recommender, 123 session; 13,864 reactions in the persona's own words. Jev says it would watch 70% of its feed and 46% of all 44,507 items it judged.
+Feed: 3,417 demo_session, 13,147 generator, 600 recommender, 123 session; 13,864 reactions in the persona's own words. Jev says it would watch 68% of its feed and 46% of all 44,507 items it judged.
 
-Top topics in its feed: cricket 12%, infrastructure 8%, national security 7%, gadgets 6%, party politics 5%, science space 4%, world news 4%, crime safety 4%, government schemes 4%, finance 4%.
+Top topics in its feed: cricket 11%, infrastructure 7%, national security 6%, gadgets 5%, party politics 5%, science space 5%, tech ai 5%, crime safety 4%, government schemes 4%, world news 4%.
 
 ### @mlproject02: Left-leaning teacher, Pune
 
 Left-leaning, labour, public services, civil liberties, environment; football, indie music, photography, gaming.
 
-Feed: 673 demo_session, 17,842 generator, 600 recommender, 171 session; 18,592 reactions in the persona's own words. Jev says it would watch 70% of its feed and 51% of all 44,507 items it judged.
+Feed: 3,325 demo_session, 17,842 generator, 600 recommender, 171 session; 18,592 reactions in the persona's own words. Jev says it would watch 68% of its feed and 51% of all 44,507 items it judged.
 
-Top topics in its feed: civil liberties 7%, environment 6%, football 6%, party politics 6%, economy 5%, labour 5%, public services 5%, tech ai 5%, crime safety 5%, science space 4%.
+Top topics in its feed: civil liberties 6%, environment 6%, party politics 6%, football 6%, economy 5%, tech ai 5%, infrastructure 5%, science space 5%, cricket 5%, labour 5%.
 
 ## Preference models
 
 ### @mlproject01: Right-leaning engineer, Indore
 
 Task: Will this persona watch it to the end and engage? (Jev's label)  
-Latest: **v4**, 44,507 items: train 30,597 (14,202 yes), validation 7,243 (3,269), test 6,667 (2,989). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
+Latest: **v6**, 44,507 items: train 30,597 (14,202 yes), validation 7,243 (3,269), test 6,667 (2,989). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
 
 | Model | Val PR-AUC | Test PR-AUC | Test ROC-AUC | Precision | Recall | F1 | Prec@50 | Brier |
 |---|---|---|---|---|---|---|---|---|
@@ -70,11 +70,13 @@ Versions, on the same frozen evaluation set:
 | v2 | 2026-10-24T18:13 | 20,963 | 0.928 | 0.838 |
 | v3 | 2026-10-24T19:40 | 23,860 | 0.930 | 0.846 |
 | v4 | 2026-10-25T09:36 | 44,507 | 0.932 | 0.839 |
+| v5 | 2026-10-25T11:47 | 44,507 | 0.932 | 0.839 |
+| v6 | 2026-10-25T12:01 | 44,507 | 0.932 | 0.839 |
 
 ### @mlproject02: Left-leaning teacher, Pune
 
 Task: Will this persona watch it to the end and engage? (Jev's label)  
-Latest: **v4**, 44,507 items: train 30,597 (15,497 yes), validation 7,243 (3,715), test 6,667 (3,380). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
+Latest: **v6**, 44,507 items: train 30,597 (15,497 yes), validation 7,243 (3,715), test 6,667 (3,380). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
 
 | Model | Val PR-AUC | Test PR-AUC | Test ROC-AUC | Precision | Recall | F1 | Prec@50 | Brier |
 |---|---|---|---|---|---|---|---|---|
@@ -108,33 +110,35 @@ Versions, on the same frozen evaluation set:
 | v2 | 2026-10-24T18:13 | 20,963 | 0.920 | 0.836 |
 | v3 | 2026-10-24T19:40 | 23,860 | 0.922 | 0.836 |
 | v4 | 2026-10-25T09:37 | 44,507 | 0.926 | 0.836 |
+| v5 | 2026-10-25T11:48 | 44,507 | 0.926 | 0.836 |
+| v6 | 2026-10-25T12:02 | 44,507 | 0.926 | 0.836 |
 
 ### Whose feed is it? (shared)
 
 Task: Whose feed is it from? (1 = @mlproject01)  
-Latest: **v4**, 32,053 items: train 21,946 (9,318 yes), validation 5,350 (2,293), test 4,757 (2,044). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
+Latest: **v6**, 25,617 items: train 17,596 (7,170 yes), validation 4,196 (1,722), test 3,825 (1,591). Chosen: **TF-IDF + logistic regression** (highest validation PR-AUC).
 
 | Model | Val PR-AUC | Test PR-AUC | Test ROC-AUC | Precision | Recall | F1 | Prec@50 | Brier |
 |---|---|---|---|---|---|---|---|---|
-| Majority class | 0.429 | 0.430 | 0.500 | 0.000 | 0.000 | 0.000 | 0.380 | 0.430 |
-| TF-IDF + logistic regression **(chosen)** | 0.748 | 0.754 | 0.803 | 0.643 | 0.760 | 0.696 | 1.000 | 0.179 |
-| Multilingual embeddings + logistic regression | 0.652 | 0.665 | 0.736 | 0.566 | 0.777 | 0.655 | 0.860 | 0.208 |
+| Majority class | 0.410 | 0.416 | 0.500 | 0.000 | 0.000 | 0.000 | 0.440 | 0.416 |
+| TF-IDF + logistic regression **(chosen)** | 0.759 | 0.771 | 0.819 | 0.625 | 0.805 | 0.704 | 0.980 | 0.170 |
+| Multilingual embeddings + logistic regression | 0.665 | 0.674 | 0.750 | 0.550 | 0.789 | 0.648 | 0.880 | 0.201 |
 
-Confusion on test (chosen model, threshold 0.42 picked on validation): TN 1,850, FP 863, FN 491, TP 1,553.
+Confusion on test (chosen model, threshold 0.38 picked on validation): TN 1,465, FP 769, FN 310, TP 1,281.
 
 By slice (test):
 
 | Slice | Items | PR-AUC | F1 |
 |---|---|---|---|
-| generated | 4,580 | 0.759 | 0.699 |
-| instagram | 58 | 0.608 | 0.600 |
-| rss | 119 | 0.619 | 0.656 |
-| en | 1,643 | 0.744 | 0.689 |
-| hi | 1,490 | 0.765 | 0.701 |
-| hinglish | 1,624 | 0.756 | 0.699 |
+| generated | 3,648 | 0.779 | 0.709 |
+| instagram | 58 | 0.621 | 0.581 |
+| rss | 119 | 0.618 | 0.628 |
+| en | 1,353 | 0.759 | 0.697 |
+| hi | 1,187 | 0.786 | 0.710 |
+| hinglish | 1,285 | 0.772 | 0.704 |
 
-Words that push towards yes: orop, india, mla, highways, pmay, phone, defence, असली, ntpc, when we, tunnel, देश, speed, central.  
-Towards no: wages, schools, workers, the, worker, यह, satire, gig, wage, but the, to, public, poor, ek.
+Words that push towards yes: orop, india, defence, highways, mla, true, when we, sbi, auction, ab, देश, test, pm, ntpc.  
+Towards no: workers, wages, schools, indie, satire, the, ek, gig, यह, worker, naya, delhi, but the, art.
 
 Versions, on the same frozen evaluation set:
 
@@ -144,6 +148,8 @@ Versions, on the same frozen evaluation set:
 | v2 | 2026-10-24T18:14 | 13,498 | 0.777 | 0.730 |
 | v3 | 2026-10-24T19:41 | 16,138 | 0.779 | 0.725 |
 | v4 | 2026-10-25T09:38 | 32,053 | 0.787 | 0.731 |
+| v5 | 2026-10-25T11:49 | 25,909 | 0.807 | 0.739 |
+| v6 | 2026-10-25T12:03 | 25,617 | 0.825 | 0.742 |
 
 ## Persona language models (LoRA)
 
@@ -163,16 +169,16 @@ Versions, on the same frozen evaluation set:
 | lora-v2 (continued) | 1,119 | 300 | 30.9 | lora-v1 held-out examples | 130.63 | 4.34 | 5.97 |
 | lora-v3 | 3,585 | 450 | 59.5 | its own held-out examples | 40.22 | 5.34 | 5.77 |
 
-## DEMO — simulated sessions
+## Simulated sessions
 
 Not Instagram observations: 14 days of sessions simulated by `python -m gradient.simulate` from the corpus's written reels, Jev's scores and the session engagement policy, in their own database. Dates are simulated; each session also records when it was generated.
 
 | Account | Simulated days | Sessions | Reels | Watched | Liked | Fit the persona, first day → last day |
 |---|---|---|---|---|---|---|
-| @mlproject01 | 2026-10-11 to 2026-10-24 | 42 | 1,525 | 1,287 | 306 | 70% → 90% |
-| @mlproject02 | 2026-10-11 to 2026-10-24 | 42 | 1,674 | 1,402 | 283 | 72% → 91% |
+| @mlproject01 | 2026-10-11 to 2026-10-24 | 112 | 7,634 | 6,455 | 1,387 | 75% → 87% |
+| @mlproject02 | 2026-10-11 to 2026-10-24 | 112 | 8,249 | 6,998 | 1,263 | 72% → 88% |
 
-Generated 2026-10-25 09:40:31 UTC.
+Generated: base, 84 sessions, 2026-10-25 09:40:31 UTC; append-2026-10-25-s2, 140 sessions, 2026-10-25 11:59:47 UTC.
 
 Writing the reels cost $2.05 on OpenRouter.
 

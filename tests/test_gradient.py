@@ -341,6 +341,104 @@ class ChatTests(unittest.TestCase):
             chat.submit("chat", {"account": "mlproject01", "question": "hi"})
 
 
+class SynthesisTests(unittest.TestCase):
+    def test_the_reply_language_follows_the_question(self):
+        self.assertEqual(chat.question_language("What do you think of the labour codes?"), "English")
+        self.assertEqual(chat.question_language("Kya chal raha hai cricket mein?"), "Hinglish")
+        self.assertEqual(chat.question_language("मौसम कैसा है?"), "Hindi")
+
+    def test_copying_and_reel_by_reel_replies_are_caught(self):
+        reels = [{"text": "The government is dismantling worker protections with these codes, unions say"}]
+        self.assertGreater(chat.copied("The government is dismantling worker protections with these codes [1].", reels),
+                           chat.COPY_LIMIT)
+        self.assertLess(chat.copied("Honestly, I think workers are losing out here, and the unions are right [1].", reels),
+                        chat.COPY_LIMIT)
+        self.assertTrue(chat.walks_through("One reel says it's good [1]. Another reel says it's bad [2]."))
+        self.assertFalse(chat.walks_through("I think it's mostly good for the economy [1][2]."))
+
+    def test_stray_tokens_in_another_script_are_dropped(self):
+        self.assertEqual(chat.clean("ทิศ\n\nThe results show it [4]."), "The results show it [4].")
+        self.assertEqual(chat.clean("यह ठीक है [1]"), "यह ठीक है [1]")
+
+    def test_a_copied_draft_is_rewritten_once_in_its_own_words(self):
+        reels = [{"id": "a", "text": "The government is dismantling worker protections with these codes, unions say",
+                  "stance": "critical"}]
+        drafts = iter(["The government is dismantling worker protections with these codes, unions say [1].",
+                       "I think workers lose out under these codes, and I'd side with the unions [1]."])
+        with mock.patch.object(chat.retrieval, "search", return_value={"items": reels, "model": "m", "enough": True}), \
+                mock.patch.object(chat.lora, "system_prompt", return_value="You are X."), \
+                mock.patch.object(chat, "generate", side_effect=lambda *a, **k: (next(drafts), "lora-v3")) as gen:
+            out = chat.answer(None, "mlproject02", "What do you make of the labour codes?")
+        self.assertTrue(out["rewritten"])
+        self.assertEqual((out["text"][:9], out["cited"]), ("I think w", [1]))
+        self.assertEqual(gen.call_count, 2)
+        self.assertIn("Reply in English", gen.call_args_list[0].args[1])
+
+    def test_injected_reels_are_numbered_after_its_own_and_marked(self):
+        own = [{"id": "a", "text": "own reel"}]
+        injected = [{"id": "b", "text": "a reel from the other side", "injected": True}]
+        with mock.patch.object(chat.retrieval, "search", return_value={"items": own, "model": "m", "enough": True}), \
+                mock.patch.object(chat.lora, "system_prompt", return_value="You are X."), \
+                mock.patch.object(chat, "generate", return_value=("Fair point there [2], but my feed says otherwise [1].",
+                                                                  None)) as gen:
+            out = chat.answer(None, "mlproject01", "labour codes", injected=injected)
+        self.assertEqual((len(out["evidence"]), out["cited"]), (2, [2, 1]))
+        self.assertIn("Reels [2] to [2] never came up in your feed", gen.call_args.args[1])
+
+
+class InsightsTests(Temp):
+    def test_distances_and_entropy(self):
+        from gradient import insights
+
+        self.assertEqual(insights._js({"a": 5}, {"a": 2}), 0.0)
+        self.assertEqual(insights._js({"a": 5}, {"b": 2}), 1.0)
+        self.assertIsNone(insights._js({}, {"a": 1}))
+        self.assertEqual(insights._entropy({"a": 1, "b": 1}, 2), 1.0)
+        self.assertEqual(insights._entropy({"a": 4}, 4), 0.0)
+
+    def test_framing_words_set_each_side_apart(self):
+        from gradient import insights
+
+        a = ["growth reform investment growth"] * 6 + ["cricket match today"] * 3
+        b = ["workers strike wages protest"] * 6 + ["cricket match today"] * 3
+        words_a, words_b = insights.log_odds(a, b, a + b)
+        self.assertIn("growth", [w for w, _ in words_a])
+        self.assertIn("workers", [w for w, _ in words_b])
+        self.assertNotIn("cricket", [w for w, _ in words_a + words_b])
+
+    def test_feeds_drifting_apart_day_by_day(self):
+        from gradient import insights
+
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        for account, stance in (("mlproject01", "supportive"), ("mlproject02", "critical")):
+            for day, mixed in (("2026-10-11", True), ("2026-10-12", False)):
+                sid = conn.execute("INSERT INTO sessions (account, started_at) VALUES (?, ?)", (account, day)).lastrowid
+                for n in range(10):
+                    side = ("supportive", "critical")[n % 2] if mixed else stance
+                    conn.execute("INSERT INTO impressions (session_id, seq, code, shown_at, category, stance, creator, "
+                                 "is_ad) VALUES (?, ?, ?, ?, 'news_politics', ?, ?, 0)",
+                                 (sid, n, f"{account}{day}{n}", f"{day} 06:00:00", side, f"c{n}"))
+        out = insights.divergence(conn)
+        first, last = out["days"]
+        self.assertEqual((first["stance_distance"], last["stance_distance"]), (0.0, 1.0))
+        self.assertEqual(last["accounts"]["mlproject01"]["stance"]["supportive"], 1.0)
+        self.assertEqual(out["summary"]["stance_distance"], [0.5, 0.5])  # fewer than 3 days: both ends average the same
+
+    def test_explain_reads_the_tfidf_model(self):
+        from gradient import insights
+
+        PrefsTests.corpus(self)
+        with mock.patch.object(prefs.biases, "load", side_effect=lambda a: persona(fingerprint=f"fp-{a}")):
+            prefs.train(self.conn, "mlproject01", embed_fn=fake_embed, progress=lambda m: None)
+        saved = prefs.load("mlproject01")
+        if saved["kind"] != "tfidf":
+            self.assertIsNone(insights.explain(saved, "railway metro"))
+            return
+        why = insights.explain(saved, "new railway metro line, workers strike")
+        self.assertIn("railway", [t["term"] for t in why["up"]])
+
+
 class LoraTests(Temp):
     def feed(self, accounts=("mlproject01",), n=200):
         b = store.new_batch(self.conn, "t")
@@ -449,17 +547,49 @@ class SimulateTests(Temp):
         actions = dict(demo.execute("SELECT decision, COUNT(*) FROM impressions GROUP BY decision").fetchall())
         self.assertTrue({"SKIP", "FULL_WATCH"} <= set(actions))
         first = demo.execute("SELECT line FROM demo_log ORDER BY session_id, n LIMIT 1").fetchone()[0]
-        self.assertIn("DEMO — simulated session", first)
+        self.assertIn("Simulated", first)
+        self.assertNotIn("DEMO", first)
         reel_lines = [r[0] for r in demo.execute("SELECT line FROM demo_log WHERE line LIKE '#%'")]
         self.assertRegex(reel_lines[0], r"^#\d+\s+\S+\s+.*→\s+(SKIP|WATCH|FULL_WATCH|REWATCH)\s+[\d.]+s")
         digests = os.listdir(os.path.join(demo_dir, "digests", "mlproject01"))
         self.assertIn("2026-10-14.json", digests)
         with open(os.path.join(demo_dir, "digests", "mlproject01", "2026-10-14.html")) as fh:
             page = fh.read()
-        self.assertIn("DEMO — simulated sessions", page)
+        self.assertIn("Simulated sessions", page)
         self.assertNotIn("instagram.com/reels/demo", page)
         self.assertIn("mlproject01", out["corpus_feed"])
         self.assertTrue(self.conn.execute("SELECT 1 FROM feed WHERE via = 'demo_session'").fetchone())
+
+        # an existing simulation is never replaced by accident, and appending keeps every existing record
+        before_sessions = demo.execute("SELECT * FROM demo_sessions ORDER BY session_id").fetchall()
+        before_rows = demo.execute("SELECT * FROM impressions ORDER BY id").fetchall()
+        before_log = demo.execute("SELECT COUNT(*) FROM demo_log").fetchone()[0]
+        demo.close()
+        with mock.patch.object(simulate.biases, "load", side_effect=fake), \
+                mock.patch("stories.digest.load_bias", side_effect=fake), \
+                mock.patch("ml.feed_model.train", return_value=None):
+            with self.assertRaises(RuntimeError):
+                simulate.build(days=4, sessions_per_day=2, today=datetime.date(2026, 10, 15), progress=lambda m: None)
+            added = simulate.append(seed=5, progress=lambda m: None, embed_fn=fake_embed)
+        demo = sqlite3.connect(os.path.join(demo_dir, "reels.db"))
+        self.assertEqual(demo.execute(f"SELECT * FROM demo_sessions WHERE session_id <= {before_sessions[-1][0]} "
+                                      "ORDER BY session_id").fetchall(), before_sessions)
+        self.assertEqual(demo.execute(f"SELECT * FROM impressions WHERE id <= {before_rows[-1][0]} ORDER BY id").fetchall(),
+                         before_rows)
+        self.assertGreater(demo.execute("SELECT COUNT(*) FROM demo_log").fetchone()[0], before_log)
+        new = demo.execute("SELECT simulated_date, simulated_start, simulated_end, batch, generated_at FROM demo_sessions "
+                           "WHERE batch LIKE 'append-%'").fetchall()
+        self.assertTrue(0 < len(new) <= len(simulate.APPEND_SESSIONS) * 4 * 2)
+        self.assertEqual(sorted({r[0] for r in new}), ["2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14"])
+        self.assertGreater(added["impressions"]["added"], 0)
+        spans = demo.execute("SELECT account, simulated_start, simulated_end FROM demo_sessions "
+                             "ORDER BY account, simulated_start").fetchall()
+        self.assertFalse([1 for x, y in zip(spans, spans[1:]) if x[0] == y[0] and y[1] < x[2]])  # no overlapping sessions
+        # what the recommender served before (replayed from the existing sessions) is never served to that account again
+        served = demo.execute("SELECT COUNT(*), COUNT(DISTINCT s.account || '|' || i.code) FROM impressions i JOIN sessions s "
+                              "ON s.id = i.session_id WHERE i.is_ad = 0").fetchone()
+        self.assertEqual(served[0], served[1])
+        demo.close()
 
 
 class JevImageTests(unittest.TestCase):

@@ -16,7 +16,7 @@ import threading
 import time
 
 from agent import bias as biases
-from gradient import chat, prefs, retrieval, store, taxonomy
+from gradient import chat, insights, prefs, retrieval, store, taxonomy
 
 TRAIN_COMMANDS = {
     "update": (["-m", "gradient", "update"], "Updating the corpus and retraining the preference models"),
@@ -191,6 +191,8 @@ def talk_start(body: dict) -> dict:
         return chat.submit("debate", {"topic": text, "rounds": min(3, max(1, int(body.get("rounds") or 2)))})
     if kind == "compare":
         return chat.submit("compare", {"question": text})
+    if kind == "blindspot":
+        return chat.submit("blindspot", {"account": _account(body.get("account")), "question": text})
     raise ValueError("Unknown kind.")
 
 
@@ -216,7 +218,8 @@ def predict(body: dict) -> dict:
                 "account": account, "name": biases.load(account).name,
                 "p": round(float(prefs.predict(model, [text])[0]), 3) if model else None,
                 "threshold": model["threshold"] if model else None, "model": model["run"] if model else None,
-                "kind": prefs.MODEL_NAMES.get(model["kind"]) if model else None, "nearest": near["items"]})
+                "kind": prefs.MODEL_NAMES.get(model["kind"]) if model else None, "nearest": near["items"],
+                "why": insights.explain(model, text) if model else None})
     finally:
         conn.close()
     feed = prefs.load("shared", "feed")
@@ -227,7 +230,18 @@ def predict(body: dict) -> dict:
     return out
 
 
+def divergence(_query: dict) -> dict:
+    """The two feeds day by day, from the selected data source (Live or Simulated)."""
+    from database.db import SOURCE, get_connection
+
+    conn = get_connection()
+    try:
+        return {**insights.divergence(conn), "simulated": SOURCE.get() == "demo"}
+    finally:
+        conn.close()
+
+
 GET = {"/api/gradient/overview": overview, "/api/gradient/items": items, "/api/gradient/models": models,
-       "/api/gradient/talk": talk}
+       "/api/gradient/talk": talk, "/api/gradient/divergence": divergence}
 POST = {"/api/gradient/train": train, "/api/gradient/train/stop": train_stop, "/api/gradient/talk/start": talk_start,
         "/api/gradient/talk/stop": talk_stop, "/api/gradient/predict": predict}

@@ -13,10 +13,10 @@ PRAG — the Gradient's ingestion: everything that grows the training corpus.
                that persona's Jev score, so what the persona likes it keeps
                getting, the way the real feed narrows
 
-  demo         DEMO: the reels the simulated sessions served (gradient/simulate.py)
+  demo         the reels the simulated sessions served (gradient/simulate.py)
                join each persona's feed as "demo_session", so chat, debate and
                training use the same demo dataset the Run, Feed and Digest tabs
-               show under the Demo source (the reels were already in the corpus;
+               show under the Simulated source (the reels were already in the corpus;
                this records that the simulated feed served them)
 
 Generated reels come in through generate.py, labels through label.py.
@@ -152,22 +152,37 @@ def recommend(conn: sqlite3.Connection, account: str, n: int = 400, seed: int = 
 
 
 def ingest_demo(conn: sqlite3.Connection, demo_db: str | None = None) -> dict:
-    """DEMO: every corpus reel a simulated session served, into that account's feed (via "demo_session")."""
+    """Every corpus reel a simulated session served, into that account's feed (via "demo_session")."""
     from database import db
 
     demo_db = demo_db or db.DEMO_DB_PATH
     if not os.path.exists(demo_db):
         return {}
     source = sqlite3.connect(demo_db)
-    rows = source.execute("SELECT DISTINCT s.account, d.item_id FROM impressions i JOIN sessions s ON s.id = i.session_id "
-                          "JOIN demo_items d ON d.code = i.code").fetchall()
+    has_batch = any(r[1] == "batch" for r in source.execute("PRAGMA table_info(demo_sessions)"))
+    # each reel joins the feed in the batch of the simulation run that first served it to the account: the first run
+    # is "demo-sessions", each appended one "demo-sessions-<its batch>", so a LoRA adapter continued afterwards sees
+    # an appended run's reels as new
+    rows = source.execute(
+        "SELECT s.account, d.item_id, " + ("COALESCE(ds.batch, 'base')" if has_batch else "'base'") + ", "
+        "MIN(ds.generated_at) FROM impressions i JOIN sessions s ON s.id = i.session_id JOIN demo_items d ON d.code = i.code "
+        "JOIN demo_sessions ds ON ds.session_id = s.id GROUP BY 1, 2, 3 ORDER BY 1, 2, 4").fetchall()
     source.close()
-    conn.execute("DELETE FROM feed WHERE via = 'demo_session'")  # the simulation is rebuilt whole, so is this
-    batch = store.new_batch(conn, "demo", "DEMO: reels the simulated sessions served", batch_id="demo-sessions")
+    conn.execute("DELETE FROM feed WHERE via = 'demo_session'")  # the simulation is read whole each time, so is this
     counts: dict = {}
-    for account, item_id in rows:
+    batches: dict[str, str] = {}
+    first: set[tuple[str, str]] = set()
+    for account, item_id, run, _generated in rows:
+        if (account, item_id) in first:  # served again by a later run: it stays in the earlier run's batch
+            continue
+        first.add((account, item_id))
+        if run not in batches:
+            batches[run] = store.new_batch(conn, "demo", f"Simulated sessions ({run}): the reels they served",
+                                           batch_id="demo-sessions" if run == "base" else f"demo-sessions-{run}")
         before = conn.total_changes
-        store.add_to_feed(conn, account, item_id, batch, "demo_session")
-        counts[account] = counts.get(account, 0) + (conn.total_changes - before)
-    store.close_batch(conn, batch, {"demo_session": counts})
-    return counts
+        store.add_to_feed(conn, account, item_id, batches[run], "demo_session")
+        counts.setdefault(run, {})
+        counts[run][account] = counts[run].get(account, 0) + (conn.total_changes - before)
+    for run, batch in batches.items():
+        store.close_batch(conn, batch, {"demo_session": counts[run]})
+    return {account: sum(c.get(account, 0) for c in counts.values()) for account in store.ACCOUNTS}

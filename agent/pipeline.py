@@ -18,10 +18,18 @@ so decisions are made in time, and its study labels come with it. The local
 LLM then writes each judged reel's topic and summary in the background,
 highest-scored first, as far as it keeps up (on_text); what's left is written
 after the session (perception/writer.py).
+
+Jev is multimodal when config.JEV_VISION is on: the reel's cover frame goes
+into the same request as the caption, speech transcript, on-screen text and
+audio metadata (perception/jev.py, jev_image.py), with a text-only fallback
+and its reason recorded. Every downloaded cover is also measured locally
+(perception/visual.py: brightness, contrast, colourfulness, how busy it is,
+its palette), and those descriptors are kept with the reel's result.
 """
 
 import asyncio
 import datetime
+import json
 import os
 import random
 import tempfile
@@ -36,7 +44,7 @@ from agent import bias as bias_module
 from agent.creators import CreatorMemory
 from automation.feed_capture import FeedCatalog, ReelMeta
 from config import EXPLORATION_RATE, JEV_VISION, SCORING_WORKERS, TRANSCRIBE_MUSIC_TRACKS, USE_COVER_OCR
-from perception import jev, jev_image, ocr, transcriber
+from perception import jev, jev_image, ocr, transcriber, visual
 from perception.heuristics import keyword_gate
 from perception.local_evaluator import ScoringError, build_user_message, evaluate_value_async, llm_serving
 from perception.writer import text_fields
@@ -62,6 +70,7 @@ class ScoreResult:
     labels: dict | None = None          # Jev's study labels: stance, claim_kind, source_type, tone
     llm_score: float | None = None      # Jev-judged reels: the local LLM's own score, written with the text
     image_used: bool | None = None      # Jev with vision on: whether the cover image was in the request
+    visual: dict | None = None          # the cover frame's measured descriptors (perception/visual.py)
 
     def score_fields(self) -> dict:
         """Columns for the impressions table."""
@@ -82,6 +91,7 @@ class ScoreResult:
             **{key: value for key, value in (self.labels or {}).items() if value},
             **({"llm_score": self.llm_score} if self.llm_score is not None else {}),
             **({"image_used": int(self.image_used)} if self.image_used is not None else {}),
+            **({"visual": json.dumps(self.visual)} if self.visual else {}),
         }
 
 
@@ -114,6 +124,7 @@ class ScoringPipeline:
         self.on_text = on_text  # Jev-judged reels: called when the LLM has written their text
         self.vision = scorer == "jev" and JEV_VISION  # Jev also sees each reel's cover image
         self._covers: dict[str, bytes] = {}  # cover bytes kept from OCR for Jev, until the reel is scored
+        self._visual: dict[str, dict] = {}  # each downloaded cover's descriptors, until the reel's result is out
         self.writing = False  # set by warm_up: the LLM is serving, so it writes as the session goes
         self._to_write: list[tuple[ReelMeta, ScoreResult]] = []
         self._write_wake = asyncio.Event()
@@ -241,6 +252,8 @@ class ScoringPipeline:
                 result = ScoreResult(meta.code, basis="llm_error", error=f"pipeline: {exc}")
             finally:
                 self._running.discard(meta.code)
+            if result.visual is None:
+                result.visual = self._visual.pop(meta.code, None)
             self._results[meta.code] = result
             self._done.setdefault(meta.code, asyncio.Event()).set()
             if result.basis == "score":
@@ -389,6 +402,9 @@ class ScoringPipeline:
                 with open(path, "rb") as fh:
                     data = fh.read()
                 jev_image.save_cover(meta.code, data)  # kept (bounded) for re-scoring later without a download
+                described = await loop.run_in_executor(None, visual.describe, data)
+                if described:
+                    self._visual[meta.code] = described
                 if self.vision:
                     self._covers[meta.code] = data
                 if not USE_COVER_OCR:

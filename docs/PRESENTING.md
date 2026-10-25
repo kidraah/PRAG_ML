@@ -11,15 +11,16 @@ Reels also carry news that never makes it to the papers, so what a feed serves m
 
 ## 2. Collection: the agent (2 min). Tabs: Run, Persona, Feed
 
-Show the real sessions on Live first. Then switch Data to **Demo** to show what two weeks look like: the banner
-says it plainly, these are simulated sessions. On Run, pick a day and a session and press Replay; on Feed, the
+Show the real sessions on Live first. Then switch Data to **Simulated** to show what two weeks look like: the
+banner says it plainly, these are simulated sessions. On Run, pick a day and a session and press Replay; on Feed, the
 day-by-day chart shows the feed narrowing; on Digest, any of the 14 days.
 
 - **Persona tab.** Each account is a persona: who they are and what they watch to the end. Show the structured
   profile under it: topic weights, stance and language preferences.
 - **Run tab.** The agent scrolls Reels as that persona. It reads the feed's JSON a few reels ahead, transcribes
-  speech with Whisper, reads the cover with OCR, and has a judge score each reel: the local LLM, or Jev. Jev now
-  also sees the cover image, since TypeSafe enabled images on 14 October. The engagement policy turns the score
+  speech with Whisper, reads the cover with OCR, and has a judge score each reel: the local LLM, or Jev. With `JEV_VISION`
+  on, Jev also sees the cover image (TypeSafe enabled images on 14 October), and every downloaded cover is
+  measured locally; click a reel on the Feed tab to see what was perceived. The engagement policy turns the score
   into watch time, likes and follows. The browser is locked to the agent.
 - **Feed tab.** The curation point (the first 100 judged reels where at least half fit the persona) and the topics
   the algorithm served.
@@ -47,12 +48,18 @@ politics and things they'd skip, the way a real feed does.
 
 ## 5. The personas, live (3 min). Tab: Ask
 
-1. **Feed predictor.** Paste the expressway reel from the "Try" list: @mlproject01 would watch it, and it lands in
-   @mlproject01's feed. Then paste the gig-workers reel and watch the result flip.
-2. **One question, two worldviews.** "Is the government handling unemployment well?" Two answers, each citing its
-   own feed, and the divergence of their evidence.
-3. **Debate.** "The Agniveer scheme", two rounds, then the moderator's summary.
-4. **Chat.** Ask @mlproject01 something its feed never covered: it says so instead of making it up.
+1. **Engagement predictor.** Paste the expressway reel from the "Try" list: @mlproject01 would watch it, and it
+   lands in @mlproject01's feed; the chips show the words that pushed each model. Then paste the gig-workers reel
+   and watch the result flip.
+2. **Framing.** "Is the government handling unemployment well?" Two answers, each citing its own feed, the words
+   each feed uses for the topic, and the divergence of their evidence.
+3. **Echo chambers** (Data: Simulated). The two feeds day by day: the political stance distance roughly doubles
+   (0.33 → 0.66) while each feed's topic variety falls. Say it's the simulation's recommender, not Instagram's.
+4. **Blind spots.** "The new labour codes" for @mlproject01: four critical reels it was never shown; its model says
+   it would scroll past them, and its answer barely moves when they're added.
+5. **Debate.** "The Agniveer scheme", two rounds, then the moderator's summary.
+6. **Chat.** Ask @mlproject01 something its feed never covered: it says so instead of making it up. Open
+   "Referenced reels" under an answer to show what it drew on.
 
 ## 6. Limits and next steps (1 min)
 

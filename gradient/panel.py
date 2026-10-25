@@ -166,6 +166,35 @@ CSS = r"""
 [data-theme="brutal"] .g-send { border-color: var(--line); }
 .g-composer .seg { align-self: center; }
 .g-foot { padding: 0 16px 10px; margin: 0; font-size: 13px; color: var(--muted); }
+.g-md { white-space: normal; }
+.g-md p { margin: 0 0 .6em; } .g-md p:last-child { margin-bottom: 0; }
+.g-md ul, .g-md ol { margin: .2em 0 .6em; padding-left: 1.3em; } .g-md li { margin: .15em 0; }
+.g-md h5 { font: 600 13px var(--display); letter-spacing: 1px; margin: .4em 0 .3em; }
+.g-name { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.g-msg.right .g-name { justify-content: flex-end; }
+.g-badge { font: 600 11px var(--mono); padding: 2px 7px; border: 1px solid var(--line); color: var(--text); }
+.g-badge.p1 { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.g-tools { display: flex; gap: 8px; min-height: 0; }
+.g-tool { font: 500 11px var(--mono); background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0; }
+.g-tool:hover { color: var(--text); text-decoration: underline; }
+.g-refs { border: 1px solid var(--rule); background: var(--panel); max-width: 72ch; }
+.g-refs summary { margin: 0; padding: 8px 12px; font: 600 12px var(--display); letter-spacing: 1px; list-style-position: inside; }
+.g-refs summary small { font: 500 11.5px var(--mono); letter-spacing: 0; color: var(--muted); }
+.g-ref { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 2px 10px; padding: 10px 12px; border-top: 1px solid var(--rule);
+         font-size: 14.5px; opacity: .78; }
+.g-ref.cited { opacity: 1; border-left: 3px solid var(--line); }
+.g-ref.flash { background: var(--hover); }
+.g-ref .n { font: 600 12px var(--mono); color: var(--muted); padding-top: 2px; }
+.g-ref .head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.g-ref .body { margin-top: 4px; overflow-wrap: anywhere; }
+.g-ref .sub { font: 500 11px var(--mono); color: var(--muted); margin-top: 4px; }
+.g-why .g-chips small { font: 500 11px var(--mono); color: var(--muted); align-self: center; margin-right: 4px; }
+.g-why .g-chips span.up { border-width: 2px; }
+.g-why .g-chips span.down { border-style: dashed; color: var(--muted); }
+.g-echo { max-width: none; }
+.g-legend { display: flex; gap: 16px; font: 500 12px var(--mono); color: var(--muted); margin-bottom: 4px; }
+.g-legend i { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--viz-bar); vertical-align: middle; margin-right: 6px; }
+.g-legend i.dash { border-top: 2px dashed var(--viz-after); }
 @media (max-width: 760px) { .g-msg { max-width: 94%; } .g-win { height: calc(100vh - 160px); } }
 
 @media (max-width: 1100px) {
@@ -254,7 +283,7 @@ const gPct = (x) => (x == null ? "–" : `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%
 const gNum = (x) => (x == null ? "–" : Number(x).toLocaleString());
 const gFix = (x, d = 3) => (x == null ? "–" : Number(x).toFixed(d));
 const VIA = {session: "Instagram sessions", generator: "Written for its feed", recommender: "Served by the recommender",
-             demo_session: "Shown in DEMO simulated sessions"};
+             demo_session: "Shown in simulated sessions"};
 const STANCES = {supportive: "Supportive of the government", critical: "Critical of it", neutral: "Neutral reporting",
                  not_political: "Not political"};
 
@@ -488,7 +517,8 @@ async function gTrain(body) {
 
 // ── Ask ──
 
-const G_MODES = [["chat", "Chat"], ["debate", "Debate"], ["compare", "One question, two worldviews"], ["predict", "Feed predictor"]];
+const G_MODES = [["chat", "Chat"], ["debate", "Debate"], ["compare", "Framing: one question, two worldviews"],
+                 ["blindspot", "Blind spots"], ["echo", "Echo chambers"], ["predict", "Engagement predictor"]];
 const G_TRY = {
   chat: {mlproject01: ["Are the new expressways worth the tolls?", "Kya chal raha hai cricket mein?", "What's the latest at the border?",
                        "Any good phone launches lately?"],
@@ -497,6 +527,7 @@ const G_TRY = {
   debate: ["The Agniveer scheme", "Delhi's air pollution", "Vande Bharat trains and fares", "Internet shutdowns", "MGNREGA wages"],
   compare: ["Is the government handling unemployment well?", "What's happening at the border with China?",
             "Should India host the Olympics?", "Are government schools getting better?"],
+  blindspot: ["The new labour codes", "Farmers and MSP", "Internet shutdowns", "The Agniveer scheme"],
   predict: ["Naya expressway khul gaya! Delhi se Jaipur ab sirf 3 ghante. Truck drivers bhi khush, toll thoda zyada hai par time bachta hai. #infrastructure",
             "Delivery riders in Bengaluru went offline today after the app cut per-order pay again. 'We work 12 hours and take home less than minimum wage,' one rider said. #gigworkers"],
 };
@@ -538,6 +569,8 @@ function gStage() {
   const stage = $("g-stage");
   if (G.mode === "chat") return stage.replaceChildren(gChatWindow());
   if (G.mode === "debate") return stage.replaceChildren(gDebateWindow());
+  if (G.mode === "echo") return gEcho(stage);
+  if (G.mode === "blindspot") return gBlindStage(stage);
   const input = G.mode === "predict" ? h("textarea", {id: "g-text", rows: 5, placeholder: "Paste a reel's caption, the text on it, or what's said in it"})
     : h("input", {type: "text", id: "g-text", maxlength: 500, placeholder: "Ask both personas the same question"});
   if (G.mode !== "predict") input.onkeydown = (e) => { if (e.key === "Enter") gGo(); };
@@ -588,36 +621,91 @@ function gScroll(force) {
   if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 140) log.scrollTop = log.scrollHeight;
 }
 
-// a persona's reply: avatar, name, the text with its citations, then its sources
-function gReply(m, key, right) {
-  const body = h("div", {class: "g-bubble"});
+// a reply's text as light markdown (paragraphs, bullet and numbered lists, **bold**, *italic*), built as DOM nodes
+// (never innerHTML), with each [n] a button that opens that reel's card
+function gMarkdown(text, onCite) {
+  const box = document.createDocumentFragment();
+  const inline = (line, into) => {
+    line.split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|\[\d{1,2}\])/).forEach((part) => {
+      if (!part) return;
+      let m;
+      if ((m = /^\*\*([^*]+)\*\*$/.exec(part))) into.append(h("strong", {text: m[1]}));
+      else if ((m = /^\*([^*]+)\*$/.exec(part))) into.append(h("em", {text: m[1]}));
+      else if ((m = /^\[(\d{1,2})\]$/.exec(part))) {
+        const b = h("button", {class: "g-cite", text: m[1], title: "Show the reel"});
+        b.onclick = () => onCite(m[1]);
+        into.append(b);
+      } else into.append(part);
+    });
+  };
+  let list = null;
+  String(text || "").split("\n").forEach((raw) => {
+    const line = raw.trim(), item = /^(?:[-*•]|\d+[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      const ordered = /^\d/.test(line);
+      if (!list || (list.tagName === "OL") !== ordered) { list = h(ordered ? "ol" : "ul"); box.append(list); }
+      const li = h("li");
+      inline(item[1], li);
+      list.append(li);
+      return;
+    }
+    list = null;
+    if (!line) return;
+    const heading = /^#{1,4}\s+(.*)$/.exec(line), p = h(heading ? "h5" : "p");
+    inline(heading ? heading[1] : line, p);
+    box.append(p);
+  });
+  return box;
+}
+
+// the reels a reply drew on, cited ones first, in a section that opens and closes
+function gRefs(m, key) {
+  const ev = m.evidence || [];
+  if (!ev.length || m.typing) return null;
+  const order = ev.map((e, i) => i + 1).sort((a, b) => ((m.cited || []).includes(b) - (m.cited || []).includes(a)) || a - b);
+  const open = G.open.has(key);
+  const box = h("details", {class: "g-refs"});
+  box.open = open;
+  box.ontoggle = () => { box.open ? G.open.add(key) : G.open.delete(key); };
+  box.append(h("summary", {}, h("span", {text: "Referenced reels"}),
+    h("small", {text: ` ${(m.cited || []).length} cited · ${ev.length} retrieved from @${m.account}'s feed`})));
+  for (const n of order) {
+    const e = ev[n - 1], cited = (m.cited || []).includes(n);
+    const who = e.creator || e.title || e.origin_name;
+    box.append(h("div", {class: "g-ref" + (cited ? " cited" : ""), id: `ref-${key}-${n}`},
+      h("span", {class: "n", text: n}),
+      h("div", {}, h("div", {class: "head"}, e.source_url ? link(e.source_url, who) : h("b", {text: who}),
+          h("span", {class: "tag-cat", text: e.origin_name}), cited ? null : h("span", {class: "hint", text: "not cited"})),
+        h("div", {class: "body", text: e.text.length > 360 ? e.text.slice(0, 358) + "…" : e.text}),
+        h("div", {class: "sub", text: `relevance ${gFix(e.similarity, 2)} · preference ${gFix(e.preference, 2)}` +
+          (e.moved_up_by_model ? " · ranked up by its preference model" : "")}))));
+  }
+  return box;
+}
+
+// a persona's reply: avatar, handle badge, the text as markdown with its citations, then the reels it referenced
+function gReply(m, key, right, answering) {
+  const body = h("div", {class: "g-bubble g-md"});
   if (m.typing && !m.text) body.append(h("span", {class: "g-dots", "aria-label": "typing"}, h("i"), h("i"), h("i")));
   else {
-    String(m.text || "").split(/\[(\d{1,2})\]/).forEach((part, i) => {
-      if (i % 2 === 0) return body.append(part);
-      const b = h("button", {class: "g-cite", text: part, title: "Show the reel"});
-      b.onclick = () => { G.open.add(`${key}:${part}`); gRedraw(); };
-      body.append(b);
-    });
+    body.append(gMarkdown(m.text, (n) => {
+      G.open.add(key);
+      gRedraw();
+      const card = document.getElementById(`ref-${key}-${n}`);
+      if (card) { card.scrollIntoView({block: "nearest", behavior: "smooth"}); card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1300); }
+    }));
     if (m.typing) body.classList.add("g-caret");
   }
-  const srcs = (m.evidence || []).length && !m.typing ? h("div", {class: "g-srcs"}, ...m.evidence.map((e, i) => {
-    const n = i + 1, id = `${key}:${n}`, cited = (m.cited || []).includes(n);
-    const chip = h("button", {class: "g-chip" + (cited ? " cited" : "") + (G.open.has(id) ? " open" : ""),
-      text: `[${n}] ${e.creator || e.title || e.origin_name}`, title: e.text.slice(0, 200)});
-    chip.onclick = () => { G.open.has(id) ? G.open.delete(id) : G.open.add(id); gRedraw(); };
-    return chip;
-  })) : null;
-  const opened = (m.evidence || []).map((e, i) => G.open.has(`${key}:${i + 1}`) ? h("div", {class: "g-src"},
-    h("div", {}, h("b", {text: `[${i + 1}] `}), e.source_url ? link(e.source_url, e.creator || e.title || "source") : h("b", {text: e.creator || e.title || ""}),
-      " ", h("span", {class: "tag-cat", text: e.origin_name})),
-    h("div", {text: e.text.length > 420 ? e.text.slice(0, 418) + "…" : e.text}),
-    h("div", {class: "sub", text: `relevance ${gFix(e.similarity, 2)} · this persona's preference ${gFix(e.preference, 2)}` +
-      (e.moved_up_by_model ? " · ranked up by its preference model" : "")})) : null).filter(Boolean);
-  const name = `@${m.account}` + (m.adapter ? ` · ${m.adapter}` : "") + (m.typing ? " · typing…" : "") +
-    (!m.typing && m.grounded === false ? " · nothing in its feed on this" : "") + (m.error ? " · " + m.error : "");
+  const badge = h("span", {class: "g-badge " + ((G_WHO[m.account] || {}).cls || "")}, "@" + m.account);
+  const state = m.typing ? (m.rewriting ? "putting it in its own words…" : "typing…")
+    : m.error ? m.error : m.grounded === false ? "nothing in its feed on this" : "";
+  const copy = !m.typing && m.text ? h("button", {class: "g-tool", text: "Copy", title: "Copy the reply"}) : null;
+  if (copy) copy.onclick = () => navigator.clipboard.writeText(m.text).then(() => toast("Copied."), () => toast("Couldn't copy.", true));
   return h("div", {class: "g-msg" + (right ? " right" : "")}, gAvatar(m.account),
-    h("div", {class: "g-body"}, h("div", {class: "g-name", text: name}), body, srcs, ...opened));
+    h("div", {class: "g-body"},
+      h("div", {class: "g-name"}, badge, m.adapter ? h("span", {text: m.adapter}) : null,
+        answering ? h("span", {text: `answering @${answering}`}) : null, state ? h("span", {text: state}) : null),
+      body, h("div", {class: "g-tools"}, copy), gRefs(m, key)));
 }
 
 function gRedraw() {  // draw again, following new messages (unless scrolled up) and keeping whatever is being typed
@@ -699,7 +787,8 @@ function gDebateWindow() {
     (d.events || []).forEach((e, i) => {
       if (e.type === "turn") {
         if (e.round !== round) { round = e.round; log.push(h("div", {class: "g-round", text: `ROUND ${round}`})); }
-        log.push(gReply(e, `d-${i}`, e.account === "mlproject02"));
+        const before = (d.events || []).slice(0, i).filter((x) => x.type === "turn").pop();
+        log.push(gReply(e, `d-${i}`, e.account === "mlproject02", before && before.account !== e.account ? before.account : null));
       } else if (e.type === "moderator") {
         log.push(h("div", {class: "g-round", text: "MODERATOR"}),
           h("div", {class: "g-mod"}, h("div", {class: "g-name", text: "The base model, with no persona" + (e.typing ? " · writing…" : "")}),
@@ -767,9 +856,10 @@ async function gPollJob() {
   } else if (j.kind === "debate" && G.debate) {
     Object.assign(G.debate, {events: j.events, status: j.status, error: j.status === "failed" ? j.error : null});
   }
-  if (j.kind === "compare" && G.mode === "compare") {
-    $("g-busy").textContent = busy ? "The personas are answering…" : j.status === "failed" ? "Failed: " + j.error : "";
-    gDrawCompare(j);
+  if ((j.kind === "compare" || j.kind === "blindspot") && G.mode === j.kind) {
+    $("g-busy").textContent = busy ? (j.kind === "compare" ? "The personas are answering…" : "Finding its blind spot and asking it twice…")
+      : j.status === "failed" ? "Failed: " + j.error : "";
+    (j.kind === "compare" ? gDrawCompare : gDrawBlind)(j);
     if (!busy) $("g-go").disabled = false;
   } else if (tab === "ask" && G.mode === j.kind) {
     gRedraw();
@@ -821,7 +911,15 @@ function gDrawCompare(j) {
       ...Object.entries(mix).filter(([, v]) => v).map(([k, v]) => h("span", {}, h("b", {text: gPct(v)}), " " + (STANCES[k] || k).toLowerCase())))),
     ...Object.entries(g.cross_preference).map(([a, c]) => h("p", {class: "hint", text:
       `@${a}'s preference model: ${gPct(c.own)} likely to engage with its own evidence, ${gPct(c.other)} with the other persona's.`}))) : null;
-  $("g-out").replaceChildren(h("div", {class: "g-pair"}, ...answers.map((a, i) => h("div", {class: "card"}, gAnswerBlock(a, `w${i}`, null)))), gap);
+  const f = g && g.framing;
+  const framing = f ? h("div", {class: "card"}, h("h3", {text: "How each feed frames it"}),
+    h("p", {class: "hint", text: `The reels on this in each persona's own feed (up to 60, by meaning), the stance they take, and the words that set ` +
+      `one feed's coverage apart from the other's (log-odds with an informative prior; higher z = more distinctive). ${f.shared_reels} reels are in both.`}),
+    h("div", {class: "g-pair"}, ...Object.entries(f.accounts).map(([acc, x]) => h("div", {},
+      h("h4", {class: "sub", text: `@${acc} · ${x.reels} reels`}),
+      h("div", {class: "g-mini"}, ...Object.entries(x.stance).filter(([, v]) => v).map(([k, v]) => h("span", {}, h("b", {text: gPct(v)}), " " + (STANCES[k] || k).toLowerCase()))),
+      h("div", {class: "g-chips"}, ...(x.words.length ? x.words.map((w) => h("span", {title: `z = ${w.z}`, text: w.term})) : [h("span", {text: "nothing distinctive"})])))))) : null;
+  $("g-out").replaceChildren(h("div", {class: "g-pair"}, ...answers.map((a, i) => h("div", {class: "card"}, gAnswerBlock(a, `w${i}`, null)))), framing, gap);
 }
 
 async function gPredict(text) {
@@ -835,6 +933,7 @@ async function gPredict(text) {
       text: p.p == null ? "no model yet" : p.p >= p.threshold ? "would watch to the end" : "would scroll past"})),
     meter("Chance it engages", p.p, p.threshold),
     h("p", {class: "hint", text: `${p.kind || ""}, ${p.model || ""}. The orange tick is the decision threshold, picked on validation.`}),
+    p.why ? gWhy(p.why) : null,
     h("h4", {class: "sub", text: "Closest reels in its feed"}),
     ...p.nearest.map((e) => h("div", {class: "g-item"}, h("div", {class: "head"}, h("span", {class: "who", text: e.creator || e.title || ""}),
       h("span", {class: "tag-cat", text: e.origin_name}), h("span", {class: "score", text: `relevance ${gFix(e.similarity, 2)}`})),
@@ -843,6 +942,131 @@ async function gPredict(text) {
     meter("@" + d.feed.first, d.feed.p_first), meter("@" + d.feed.second, 1 - d.feed.p_first),
     h("p", {class: "hint", text: `${d.feed.kind}, ${d.feed.model}: trained on which account's feed each reel was in.`})) : null;
   $("g-out").replaceChildren(feed, h("div", {class: "g-pair"}, ...blocks));
+}
+
+// ── Engagement predictor: why the model scored it so ──
+
+function gWhy(w) {
+  const row = (t, cls) => h("span", {class: cls, title: `weight ${t.weight > 0 ? "+" : ""}${t.weight}`, text: t.term});
+  return h("div", {class: "g-why"}, h("h4", {class: "sub", text: "Why: the words that moved it"}),
+    w.up.length ? h("div", {class: "g-chips up"}, h("small", {text: "towards watching"}), ...w.up.map((t) => row(t, "up"))) : null,
+    w.down.length ? h("div", {class: "g-chips down"}, h("small", {text: "towards scrolling past"}), ...w.down.map((t) => row(t, "down"))) : null,
+    h("p", {class: "hint", text: `Word features add ${gFix(w.words_total, 2)} to the log-odds, character n-grams ${gFix(w.char_ngrams, 2)}, ` +
+      `from a starting point of ${gFix(w.intercept, 2)}. (TF-IDF weight in this text × the model's coefficient.)`}));
+}
+
+// ── Blind spots ──
+
+function gBlindStage(stage) {
+  G.blindAccount = G.blindAccount || "mlproject01";
+  const input = h("input", {type: "text", id: "g-text", maxlength: 300, placeholder: "A topic, e.g. the new labour codes"});
+  input.onkeydown = (e) => { if (e.key === "Enter") gBlind(); };
+  const go = h("button", {class: "btn primary", id: "g-go", text: "Inject and ask"});
+  go.onclick = () => gBlind();
+  stage.replaceChildren(h("div", {class: "card"},
+    h("p", {class: "lede", text: "Show a persona reels on a topic from the side its feed leans away from, reels it was never shown. Its preference model says whether it would even have watched them; then it answers twice, from its own feed and with them added, and the change is measured."}),
+    h("div", {class: "g-ask-form", style: "margin-top:14px"}, h("div", {class: "seg small", id: "g-blind-account", role: "radiogroup", "aria-label": "Persona"}), input,
+      h("div", {class: "g-try"}, h("span", {class: "hint", text: "Try:"}), ...G_TRY.blindspot.map((t) => {
+        const b = h("button", {class: "linkish", text: t}); b.onclick = () => { $("g-text").value = t; gBlind(); }; return b; })),
+      h("div", {class: "actions", style: "margin-top:4px"}, go, h("span", {class: "hint", id: "g-busy"})))), h("div", {id: "g-out"}));
+  gSeg("g-blind-account", [["mlproject01", "@mlproject01"], ["mlproject02", "@mlproject02"]], G.blindAccount, (v) => { G.blindAccount = v; });
+}
+
+async function gBlind() {
+  const text = ($("g-text").value || "").trim();
+  if (!text) { toast("Type a topic first.", true); return; }
+  try { G.job = await api("/api/gradient/talk/start", {kind: "blindspot", account: G.blindAccount, text}); } catch (e) { toast(e.message, true); return; }
+  $("g-go").disabled = true;
+  gPollJob();
+}
+
+function gDrawBlind(j) {
+  const c = j.events.find((e) => e.type === "counter"), shift = j.events.find((e) => e.type === "shift");
+  const answers = j.events.filter((e) => e.type === "answer");
+  const out = [];
+  if (c) {
+    const side = (s) => (STANCES[s] || s || "").toLowerCase();
+    out.push(h("div", {class: "card"}, h("h3", {text: c.items.length ? `${c.items.length} reels it was never shown` : "No blind spot found"}),
+      h("p", {class: "hint", text: c.against ? `@${c.account}'s feed on this leans ${side(c.leans)}; these are ${side(c.against)} reels on the same topic from the corpus, none of them in its feed.`
+        : "Its feed doesn't lean either way on this, so there's no opposite side to inject."}),
+      ...c.items.map((e, i) => h("div", {class: "g-item"}, h("div", {class: "head"}, h("span", {class: "who", text: `[${i + 1}] ${e.creator || e.title || ""}`}),
+          h("span", {class: "tag-cat", text: e.origin_name}),
+          h("span", {class: "badge" + (e.would_engage ? " ok" : ""), text: e.preference == null ? "no model" : e.would_engage ? `would watch (${gPct(e.preference)})` : `would scroll past (${gPct(e.preference)})`})),
+        h("div", {class: "body", text: e.text.slice(0, 260)})))));
+  }
+  if (shift) {
+    out.push(h("div", {class: "card"}, h("h3", {text: "What changed"}), h("div", {class: "g-mini"},
+      h("span", {}, h("b", {text: gFix(shift.answer_similarity, 2)}), " similarity of the two answers (1 = same meaning)"),
+      h("span", {}, h("b", {text: (shift.towards_counter > 0 ? "+" : "") + gFix(shift.towards_counter, 3)}), " movement towards the injected reels' meaning"),
+      h("span", {}, h("b", {text: `${shift.cited_injected.length} of ${shift.injected}`}), " injected reels cited"))));
+  }
+  const titled = (a) => h("div", {class: "card"}, h("h4", {class: "sub", text: a.phase === "after" ? "With the reels it never saw" : "From its own feed only"}), gAnswerBlock(a, `b-${a.phase}`, null));
+  if (answers.length) out.push(h("div", {class: "g-pair"}, ...answers.map(titled)));
+  $("g-out").replaceChildren(...out);
+}
+
+// ── Echo chambers: the two feeds day by day ──
+
+function gLines(series, days, {max = 1, label}) {  // one or two lines over the days; hover a day for its values
+  const W = 640, H = 210, P = {l: 40, r: 120, t: 12, b: 30}, n = days.length;
+  const x = (i) => P.l + (n < 2 ? 0 : i / (n - 1)) * (W - P.l - P.r), y = (v) => P.t + (1 - v / max) * (H - P.t - P.b);
+  const s = svg("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label});
+  for (const f of [0, 0.5, 1]) {
+    s.append(svg("line", {x1: P.l, x2: W - P.r, y1: y(f * max), y2: y(f * max), class: "grid"}));
+    s.append(svg("text", {x: P.l - 6, y: y(f * max) + 4, "text-anchor": "end", class: "axis"}, String(+(f * max).toFixed(2))));
+  }
+  days.forEach((d, i) => { if (i % 2 === 0 || i === n - 1) s.append(svg("text", {x: x(i), y: H - 8, "text-anchor": "middle", class: "axis"}, d.slice(5))); });
+  const ends = [];
+  series.forEach((ser, k) => {
+    const pts = ser.values.map((v, i) => (v == null ? null : [x(i), y(v)])).filter(Boolean);
+    if (!pts.length) return;
+    s.append(svg("path", {d: pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(""), class: k ? "val" : "train"}));
+    ends.push({name: ser.name, x: pts[pts.length - 1][0], y: pts[pts.length - 1][1]});
+  });
+  ends.sort((p, q) => p.y - q.y);  // end labels pushed apart so two lines ending close together stay readable
+  ends.forEach((e, i) => { if (i && e.y - ends[i - 1].y < 14) e.y = ends[i - 1].y + 14; s.append(svg("text", {x: e.x + 8, y: e.y + 4, class: "axis"}, e.name)); });
+  days.forEach((d, i) => {
+    const hit = svg("rect", {x: x(i) - (W - P.l - P.r) / Math.max(n - 1, 1) / 2, y: P.t, width: (W - P.l - P.r) / Math.max(n - 1, 1), height: H - P.t - P.b, fill: "transparent"});
+    hit.append(svg("title", {}, `${d}\n` + series.map((ser) => `${ser.name}: ${ser.values[i] == null ? "–" : gFix(ser.values[i], 3)}`).join("\n")));
+    s.append(hit);
+  });
+  const legend = h("div", {class: "g-legend"}, ...series.map((ser, k) => h("span", {}, h("i", {class: k ? "dash" : "solid"}), ser.name)));
+  return h("div", {class: "g-curve g-echo"}, legend, s);
+}
+
+async function gEcho(stage) {
+  stage.replaceChildren(h("div", {class: "card"}, h("p", {class: "hint", text: "Loading…"})));
+  let d;
+  try { d = await api("/api/gradient/divergence"); } catch (e) { stage.replaceChildren(h("p", {class: "notice", text: e.message})); return; }
+  if (!d.days.length) { stage.replaceChildren(h("div", {class: "card"}, h("p", {text: "No days with reels for both accounts in this data yet."}))); return; }
+  const [a, b] = d.accounts, days = d.days.map((r) => r.day), sm = d.summary;
+  const pick = (f) => d.days.map(f);
+  const delta = (pair) => `${gFix(pair[0], 2)} → ${gFix(pair[1], 2)}`;
+  const intro = d.simulated ? "From the simulated sessions: this shows how the simulation's recommender narrowed each feed, not a measurement of Instagram."
+    : "From the recorded Instagram sessions.";
+  stage.replaceChildren(
+    h("div", {class: "card"}, h("h2", {class: "headline", text: "Are the feeds becoming echo chambers?"}),
+      h("p", {class: "lede", text: `Day by day over ${days.length} days, how far apart @${a}'s and @${b}'s feeds are and how varied each one is. ${intro}`}),
+      h("div", {class: "g-stats"},
+        h("div", {class: "g-stat"}, h("b", {text: delta(sm.stance_distance)}), h("span", {text: "political stance distance, first 3 days → last 3"})),
+        h("div", {class: "g-stat"}, h("b", {text: delta(sm.topic_distance)}), h("span", {text: "topic distance"})),
+        h("div", {class: "g-stat"}, h("b", {text: delta(sm.entropy[a])}), h("span", {text: `@${a} topic variety (entropy)`})),
+        h("div", {class: "g-stat"}, h("b", {text: delta(sm.entropy[b])}), h("span", {text: `@${b} topic variety`})))),
+    h("div", {class: "g-pair"},
+      h("div", {class: "card"}, h("h3", {text: "How far apart the feeds are"}),
+        h("p", {class: "hint", text: "Jensen-Shannon distance between the two feeds' mixes: 0 = the same mix, 1 = nothing in common. Stance counts political reels only."}),
+        gLines([{name: "stance", values: pick((r) => r.stance_distance)}, {name: "topics", values: pick((r) => r.topic_distance)}], days, {label: "Distance between the feeds per day"})),
+      h("div", {class: "card"}, h("h3", {text: "How varied each feed is"}),
+        h("p", {class: "hint", text: `Topic entropy, normalised: 1 = spread evenly over all ${d.categories} categories, 0 = a single one.`}),
+        gLines([{name: "@" + a, values: pick((r) => r.accounts[a].entropy)}, {name: "@" + b, values: pick((r) => r.accounts[b].entropy)}], days, {label: "Topic entropy per day"}))),
+    h("div", {class: "card"}, h("h3", {text: "Every day"}),
+      h("p", {class: "hint", text: `01 = @${a}, 02 = @${b}. Variety is the topic entropy; top-3 the share of the three biggest categories; pro-govt and critical are shares of the political reels.`}), h("div", {class: "table-scroll"}, h("table", {class: "data"},
+      h("tr", {}, ...["Day", "Stance dist.", "Topic dist.", "Shared creators", "01 variety", "01 top-3", "01 pro-govt", "02 variety", "02 top-3", "02 critical"]
+        .map((t, i) => h("th", {class: i ? "num" : null, text: t}))),
+      ...d.days.map((r) => h("tr", {}, h("td", {style: "white-space:nowrap", text: r.day.slice(5)}), ...[gFix(r.stance_distance, 2), gFix(r.topic_distance, 2), gPct(r.shared_creators),
+        gFix(r.accounts[a].entropy, 2), gPct(r.accounts[a].top3), gPct(r.accounts[a].stance && r.accounts[a].stance.supportive),
+        gFix(r.accounts[b].entropy, 2), gPct(r.accounts[b].top3), gPct(r.accounts[b].stance && r.accounts[b].stance.critical)]
+        .map((v) => h("td", {class: "num", text: v}))))))));
 }
 
 document.addEventListener("DOMContentLoaded", () => {

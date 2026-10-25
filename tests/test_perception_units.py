@@ -117,3 +117,34 @@ class ParseJudgementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VisualTests(unittest.TestCase):
+    def frame(self, size, colour):
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.new("RGB", size, colour).save(out, "PNG")
+        return out.getvalue()
+
+    def test_a_cover_frame_measured(self):
+        from perception import visual
+
+        white = visual.describe(self.frame((360, 640), (255, 255, 255)))
+        self.assertEqual((white["brightness"], white["portrait"], white["palette"][0]["hex"]), (1.0, True, "#ffffff"))
+        red = visual.describe(self.frame((640, 360), (255, 0, 0)))
+        self.assertGreater(red["colourfulness"], white["colourfulness"])
+        self.assertFalse(red["portrait"])
+        self.assertIsNone(visual.describe(b"not an image"))
+        self.assertEqual(visual.short(white), "bright muted clean")
+
+    def test_descriptors_are_kept_with_the_reel(self):
+        import json
+
+        from agent.pipeline import ScoreResult
+
+        fields = ScoreResult("C1", basis="score", value_score=0.7, image_used=True, visual={"brightness": 0.5}).score_fields()
+        self.assertEqual((json.loads(fields["visual"]), fields["image_used"]), ({"brightness": 0.5}, 1))
+        self.assertNotIn("visual", ScoreResult("C2", basis="score").score_fields())

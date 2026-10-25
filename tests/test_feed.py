@@ -176,6 +176,26 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(info["reels"][1]["summary"], "caption 10")  # no summary: the caption stands in
         self.assertIn("promotion", info["categories"])
 
+    def test_a_page_of_reels_with_filters(self):
+        rows, _ = feed.load_feed(self.conn, "acct")
+        page = feed.reel_page(rows, limit=4)
+        self.assertEqual((page["total"], [r["seq"] for r in page["items"]]), (11, [11, 10, 9, 8]))
+        self.assertEqual([r["seq"] for r in feed.reel_page(rows, offset=8, limit=4)["items"]], [3, 2, 1])
+        self.assertEqual(feed.reel_page(rows, phase="warm-up")["total"], 5)
+        self.assertEqual(feed.reel_page(rows, category="_ad")["total"], 1)
+        self.assertEqual(feed.reel_page(rows, category="comedy_memes")["total"], 4)
+        self.assertEqual([r["seq"] for r in feed.reel_page(rows, query="CAPTION 7")["items"]], [7])
+        self.assertEqual(feed.reel_page(rows, account="someone-else")["total"], 0)
+
+    def test_sessions_in_the_order_they_ran_not_by_id(self):
+        late = _session(self.conn)  # a session added afterwards that ran before every other one
+        self.conn.execute("UPDATE sessions SET started_at = '2000-01-01 00:00:00' WHERE id = ?", (late,))
+        _reel(self.conn, late, 1, "EARLY", 0.1, creator="meme_page")
+        rows, state = feed.load_feed(self.conn, "acct")
+        self.assertEqual(rows[0]["code"], "EARLY")
+        self.assertEqual((rows[0]["phase"], state["since"]["seq"]), ("warm-up", 6))
+        self.assertEqual(sum(r["phase"] == "curated" for r in rows), 6)
+
     def test_every_account_side_by_side(self):
         sid = _session(self.conn, account="other")
         for seq in range(1, 4):  # a second persona's account: still warming up, and it shares a creator

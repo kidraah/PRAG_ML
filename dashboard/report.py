@@ -36,7 +36,7 @@ SELECT i.session_id, i.seq, i.code, i.url, i.creator, i.is_ad, i.score_basis, i.
        i.shown_at, s.scorer
 FROM impressions i JOIN sessions s ON s.id = i.session_id
 WHERE s.account = ?
-ORDER BY i.session_id, i.seq
+ORDER BY s.started_at, i.session_id, i.seq
 """
 
 SESSIONS_SQL = """
@@ -47,7 +47,7 @@ SELECT s.id, strftime('%Y-%m-%d %H:%M', s.started_at, 'localtime') AS started,
        COALESCE(SUM(i.followed), 0) AS followed
 FROM sessions s LEFT JOIN impressions i ON i.session_id = s.id
 WHERE s.account = ?
-GROUP BY s.id ORDER BY s.id
+GROUP BY s.id ORDER BY s.started_at, s.id
 """
 
 

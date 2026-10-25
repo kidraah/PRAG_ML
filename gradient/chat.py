@@ -16,7 +16,9 @@ believing something doesn't make it true.
             the opponent's words are an argument to answer, not evidence;
             then the base model, with no persona, summarises as moderator
   compare   both answer the same question, with how far apart their answers
-            and their evidence are
+            and their evidence are, and how each feed frames the topic
+  blindspot one persona answers, then answers again with reels from the side
+            its feed leans away from, never shown to it (insights.counter)
 
 All model work runs on one worker thread (MLX keeps to one), as jobs the
 panel polls. Replies stream: each event's text grows as it's written, so the
@@ -101,8 +103,15 @@ def clean(text: str) -> str:
     """The reply without reasoning tags or the stray tokens a small model sometimes emits around them."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     text = re.sub(r"</?(?:think|tool_call|tool_response|im_start|im_end|\|[a-z_]+\|)>", "", text)
-    lines = [line for line in text.splitlines() if len(line.strip()) > 2 or not line.strip()]
+    lines = [line for line in text.splitlines() if (len(line.strip()) > 2 or not line.strip()) and readable(line)]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def readable(line: str) -> bool:
+    """False for a line that's mostly letters of a script the personas don't write (a small model's stray tokens)."""
+    letters = [c for c in line if c.isalpha()]
+    ours = sum(c.isascii() or "\u0900" <= c <= "\u097F" for c in letters)
+    return not letters or ours / len(letters) >= 0.5
 
 
 def complete(text: str) -> str:
@@ -132,24 +141,84 @@ def checked_citations(text: str, n: int) -> tuple[str, list[int], list[int]]:
 
 # ── What the personas do ──────────────────────────────────────────────
 
+HINGLISH = {"hai", "hain", "kya", "kyun", "kaise", "nahi", "nahin", "mein", "ke", "ki", "ka", "ko", "bhi", "aur", "yeh",
+            "kuch", "lagta", "baare", "chal", "raha", "rahi", "tum", "aap", "mujhe", "accha", "acha", "sab", "pe", "par"}
+SYNTHESISE = ("How to answer: open with your own view in one sentence. Then make the point your feed has been making, "
+              "combining what several reels say, instead of going through them one by one; never write \"one reel "
+              "says\" or copy a caption or hashtags, put it in your own words. Put the citation after the claim it "
+              "supports, like [2] or [1][3]. Keep reported facts apart from your opinion of them. One or two short "
+              "paragraphs. Reply in {language}.")
+REWRITE = ("That copied the reels' wording or went through them one at a time. Say it again to me: your view first, "
+           "then the point in your own words, with the same citations.")
+COPY_LIMIT = 0.3  # the share of a reply's word 5-grams found word for word in its evidence that counts as copying
+
+
+def question_language(text: str) -> str:
+    """What to answer in: Hindi for Devanagari, Hinglish for romanised Hindi, else English."""
+    if re.search(r"[\u0900-\u097F]", text):
+        return "Hindi"
+    words = re.findall(r"[a-z]+", text.lower())
+    return "Hinglish" if words and sum(w in HINGLISH for w in words) >= max(1, len(words) // 5) else "English"
+
+
+def copied(text: str, evidence: list[dict], n: int = 5) -> float:
+    """The share of the reply's word n-grams that appear word for word in the evidence: 0 is all its own words."""
+    words = lambda t: re.findall(r"\w+", t.lower())  # noqa: E731
+    mine = words(re.sub(r"\[\d{1,2}\]", "", text))
+    grams = {tuple(mine[i:i + n]) for i in range(len(mine) - n + 1)}
+    if not grams:
+        return 0.0
+    source = set()
+    for item in evidence:
+        theirs = words(item.get("text") or "")
+        source.update(tuple(theirs[i:i + n]) for i in range(len(theirs) - n + 1))
+    return round(len(grams & source) / len(grams), 3)
+
+
+def walks_through(text: str) -> bool:
+    """A reply that lists the reels ("one reel says…, another reel…") instead of making a point."""
+    return len(re.findall(r"\b(?:ek|doosri|another|one|this|the first|the second|teesri)\s+reel\b", text, re.I)) >= 2
+
+
 def answer(conn, account: str, question: str, *, query: str | None = None, history: list[dict] | None = None,
-           live: dict | None = None, should_stop=lambda: False) -> dict:
-    """One grounded answer: retrieve from this persona's feed, generate, check the citations. `live`: an event the
-    panel is already showing; it's filled in as the reply is written, then completed."""
+           live: dict | None = None, should_stop=lambda: False, language: str | None = None,
+           injected: list[dict] | None = None) -> dict:
+    """One grounded answer: retrieve from this persona's feed, generate, check the citations. The persona interprets
+    the reels in its own voice; a draft that mostly copies their wording or lists them one by one is rewritten once.
+    `live`: an event the panel is already showing; it's filled in as the reply is written, then completed.
+    `injected`: reels from outside the persona's feed added after its own (blind-spot injection), told apart as such."""
     found = retrieval.search(conn, account, query or question)
+    if injected:
+        found = {**found, "items": found["items"] + injected, "enough": True}
     system = lora.system_prompt(account)
     if found["items"]:
         system += "\n\n" + lora.context_block(found["items"])
+        if injected:
+            first = len(found["items"]) - len(injected) + 1
+            system += (f"\n\nReels [{first}] to [{len(found['items'])}] never came up in your feed: someone has just "
+                       "shown them to you. React to them honestly, as yourself.")
     else:
         system += "\n\nNo reels in your feed are about this. Say so; don't make anything up."
-    system += "\n\nAnswer in plain text: what the reels report, in your own words, and what you make of it."
+    system += "\n\n" + SYNTHESISE.format(language=language or question_language(question))
     out = live if live is not None else {}
     out.update({"account": account, "evidence": found["items"], "text": "", "typing": True})
     text, adapter = generate(account, system, question.strip(), history=history,
                              on_text=lambda partial: out.update(text=partial), should_stop=should_stop)
-    text, cited, invalid = checked_citations(complete(text), len(found["items"]))
+    text = complete(text)
+    rewritten = False
+    if found["items"] and not should_stop() and (copied(text, found["items"]) > COPY_LIMIT or walks_through(text)):
+        out.update(text="", rewriting=True)
+        earlier = [*(history or []), {"role": "user", "text": question}, {"role": "assistant", "text": text}]
+        again, _ = generate(account, system, REWRITE, history=earlier, on_text=lambda partial: out.update(text=partial),
+                            should_stop=should_stop)
+        again = complete(again)
+        if again and not walks_through(again) and copied(again, found["items"]) <= max(copied(text, found["items"]),
+                                                                                       COPY_LIMIT):
+            text, rewritten = again, True
+    text, cited, invalid = checked_citations(text, len(found["items"]))
     out.update({"text": text, "cited": cited, "invalid_citations": invalid, "grounded": found["enough"],
-                "adapter": adapter, "preference_model": found["model"], "typing": False})
+                "adapter": adapter, "preference_model": found["model"], "typing": False, "rewriting": False,
+                "copied": copied(text, found["items"]), "rewritten": rewritten})
     return out
 
 
@@ -207,7 +276,9 @@ def compare_job(job: dict, conn) -> None:
             return
         answers.append(answer(conn, account, p["question"], live=_live(job, type="answer", account=account),
                               should_stop=lambda: job["stop"]))
-    job["events"].append({"type": "gap", **gap(answers)})
+    from gradient import insights
+
+    job["events"].append({"type": "gap", **gap(answers), "framing": insights.framing(conn, p["question"])})
 
 
 def stance_mix(items: list[dict]) -> dict:
@@ -238,7 +309,42 @@ def gap(answers: list[dict]) -> dict:
             "evidence_divergence": round(js, 3), "cross_preference": cross}
 
 
-KINDS = {"chat": chat_job, "debate": debate_job, "compare": compare_job}
+def blindspot_job(job: dict, conn) -> None:
+    """Blind-spot injection: the persona answers from its own feed, then again with reels on the same topic from
+    the side its feed leans away from, which it was never shown. Reports whether it would even have engaged with
+    them (its preference model), whether it cites them, and how far its answer moves towards them."""
+    from gradient import insights
+
+    p = job["params"]
+    account, topic = p["account"], p["question"]
+    found = insights.counter(conn, account, topic)
+    model = prefs.load(account)
+    if found["items"] and model:
+        probs = prefs.predict(model, [e["text"] for e in found["items"]])
+        for e, pr in zip(found["items"], probs):
+            e["preference"] = round(float(pr), 3)
+            e["would_engage"] = bool(pr >= model["threshold"])
+    job["events"].append({"type": "counter", "account": account, **found,
+                          "threshold": model["threshold"] if model else None})
+    if not found["items"] or job["stop"]:
+        return
+    stop = lambda: job["stop"]  # noqa: E731
+    before = answer(conn, account, topic, live=_live(job, type="answer", account=account, phase="before"),
+                    should_stop=stop)
+    if job["stop"]:
+        return
+    after = answer(conn, account, topic, live=_live(job, type="answer", account=account, phase="after"),
+                   should_stop=stop, injected=found["items"])
+    own = len(after["evidence"]) - len(found["items"])
+    va, vb = vectors.embed_texts([before["text"], after["text"]])
+    centre = vectors.embed_texts([e["text"] for e in found["items"]]).mean(axis=0)
+    centre /= max(float(np.linalg.norm(centre)), 1e-9)
+    job["events"].append({"type": "shift", "account": account, "answer_similarity": round(float(va @ vb), 3),
+                          "towards_counter": round(float(vb @ centre - va @ centre), 3),
+                          "cited_injected": [n for n in after["cited"] if n > own], "injected": len(found["items"])})
+
+
+KINDS = {"chat": chat_job, "debate": debate_job, "compare": compare_job, "blindspot": blindspot_job}
 
 
 # ── Jobs ──────────────────────────────────────────────────────────────

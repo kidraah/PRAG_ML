@@ -1,13 +1,15 @@
 """
-PRAG — DEMO: 14 days of simulated sessions for both personas.
+PRAG — 14 days of simulated sessions for both personas.
 
 Every record this writes is a simulation, kept in its own database
-(database.db.DEMO_DB_PATH) and shown in the panel only under the Demo source,
-with a "DEMO — simulated sessions" banner. Nothing here is an Instagram
+(database.db.DEMO_DB_PATH) and shown in the panel only under the Simulated
+data source, with a "Simulated sessions" banner. Nothing here is an Instagram
 observation, and it never touches reels.db.
 
 How a simulated session is made, for each account and each of the 14 complete
-days before today (three sessions a day: morning, afternoon, evening):
+days before today (SESSIONS: six a day, three scheduled and three opened by
+hand, about 3.7 hours of scrolling in all, a heavy user's day, so the two
+accounts' 14 days come to 12,000+ impressions):
 
   serve     a simulated recommender picks each next reel from the training
             corpus's written reels (gradient/store.py). Reels about a real
@@ -33,9 +35,10 @@ Each session stores its simulated start and end (shown as the session's
 time, labelled simulated) and, separately, when it was actually generated.
 Daily digests are built from each simulated day's impressions with the
 digest's own code; a news reel's source reference is the real article it was
-written about. A demo feed-topic model is trained on the demo impressions.
+written about. A feed-topic model is trained on the simulated impressions.
 
-    python -m gradient.simulate [--days 14] [--sessions 2] [--seed 1]
+    python -m gradient.simulate [--days 14] [--sessions 6] [--seed 1] [--fresh]   a new simulation
+    python -m gradient.simulate --append [--seed 2]     more sessions on the same days, existing ones kept
 """
 
 import argparse
@@ -69,7 +72,10 @@ COLD_START = {"hindi_comedy": 3.0, "film_tv": 3.0, "fashion_beauty": 3.0, "lifes
               "satire": 1.5, "travel_nature": 1.5}
 SHARPNESS = 0.3  # how hard the learned affinities steer: low enough that a feed narrows without collapsing
 LEARN = {"SKIP": 0.965, "WATCH": 1.02, "FULL_WATCH": 1.05, "REWATCH": 1.08}
-SLOTS = (datetime.time(7, 30), datetime.time(13, 0), datetime.time(20, 0))  # morning, afternoon, evening
+# (local start, how it was started, its length in minutes): the scheduled runs are longer than the ones opened by hand
+SESSIONS = ((datetime.time(7, 15), "scheduled", (40, 55)), (datetime.time(10, 30), "manual", (20, 35)),
+            (datetime.time(13, 0), "scheduled", (40, 55)), (datetime.time(16, 30), "manual", (20, 35)),
+            (datetime.time(19, 45), "scheduled", (40, 55)), (datetime.time(22, 30), "manual", (20, 35)))
 AD_EVERY = (9, 16)
 FRESH_DAYS = 3
 INFORMATIONAL = {"news_politics", "business_money", "tech_science", "education"}
@@ -81,6 +87,8 @@ CREATE TABLE IF NOT EXISTS demo_sessions (
     simulated_date  TEXT NOT NULL,       -- the local calendar day it simulates
     simulated_start TEXT NOT NULL,       -- UTC, as sessions.started_at
     simulated_end   TEXT NOT NULL,
+    kind            TEXT,                -- scheduled or manual
+    batch           TEXT,                -- which simulation run made it: "base", or an appended batch
     generated_at    TEXT NOT NULL,       -- when this simulation was actually made (UTC)
     seed            TEXT NOT NULL,
     temperature     REAL,
@@ -176,20 +184,26 @@ def topic_of(item: dict) -> str:
 
 
 def simulate_session(conn, corpus_pool: dict, state: dict, account: str, day: datetime.date, slot: int, d_index: int,
-                     n_days: int, rng: random.Random, scorer: str, generated_at: str) -> dict:
+                     n_days: int, rng: random.Random, scorer: str, generated_at: str, plan: tuple | None = None,
+                     batch: str = "base") -> dict:
+    """One simulated session. `plan`: (start, kind, minutes), else the day's slot in SESSIONS."""
     bias = biases.load(account)
     profile = bias.profile or {}
     explore = profile.get("exploration") or {}
     t0, t1 = float(explore.get("start_temperature", 0.8)), float(explore.get("end_temperature", 0.15))
     temperature = t0 + (t1 - t0) * (d_index / max(n_days - 1, 1))
-    local_start = datetime.datetime.combine(day, SLOTS[slot % len(SLOTS)]).astimezone()
-    start = local_start + datetime.timedelta(minutes=rng.randint(0, 100))
-    minutes = rng.uniform(15, 25)
+    if plan:
+        start, kind, minutes = plan
+    else:
+        at, kind, (shortest, longest) = SESSIONS[slot % len(SESSIONS)]
+        local_start = datetime.datetime.combine(day, at).astimezone()
+        start = local_start + datetime.timedelta(minutes=rng.randint(0, 60))
+        minutes = rng.uniform(shortest, longest)
     cur = conn.execute("INSERT INTO sessions (account, started_at, dry_run, model, scorer) VALUES (?, ?, 0, ?, ?)",
                        (account, utc(start), "demo-simulation", scorer))
     session_id = cur.lastrowid
     log: list[tuple[datetime.datetime, str]] = [
-        (start, f"🧪  DEMO — simulated session {session_id} for @{account}, simulated {start:%a %d %b %Y %H:%M} "
+        (start, f"🧪  Simulated {kind} session {session_id} for @{account}, simulated {start:%a %d %b %Y %H:%M} "
                 f"(generated {generated_at} UTC)"),
         (start, f"🎭  Persona: {bias.name}"),
         (start, f"🧭  Recommender temperature {temperature:.2f} (day {d_index + 1} of {n_days}), exploration {EPSILON:.0%}"),
@@ -267,7 +281,7 @@ def simulate_session(conn, corpus_pool: dict, state: dict, account: str, day: da
             "cover_text": item.get("on_screen") if item else None, "score_basis": "ad" if is_ad else "score",
             "value_score": score, "is_informational": int(bool(item) and taxonomy.category(item["topic"]) in INFORMATIONAL),
             "topic": topic_of(item) if item else None,
-            "summary": summary_of(item) if item else None, "reasoning": "DEMO simulation: Jev's score for this persona",
+            "summary": summary_of(item) if item else None, "reasoning": "Simulated session: Jev's score for this persona",
             "scored_at": utc(clock), "decision": decision.action, "decision_basis": decision.basis,
             "explored": int(decision.explored), "dwell_seconds": round(dwell, 2), "planned": decision.planned,
             "liked": int(done["liked"]), "saved": int(done["saved"]), "followed": int(done["followed"]),
@@ -290,7 +304,7 @@ def simulate_session(conn, corpus_pool: dict, state: dict, account: str, day: da
     minutes_done = (clock - start).total_seconds() / 60
     conn.execute("UPDATE sessions SET ended_at = ?, reels = ? WHERE id = ?", (utc(clock), seq, session_id))
     log += [
-        (clock, f"🏁  Session {session_id} — {seq} reels in {minutes_done:.1f} min (DEMO — simulated)"),
+        (clock, f"🏁  Session {session_id} — {seq} reels in {minutes_done:.1f} min (simulated)"),
         (clock, f"    decisions: SKIP {tally['SKIP']} · WATCH {tally['WATCH']} · FULL_WATCH {tally['FULL_WATCH']}"
                 f" · REWATCH {tally['REWATCH']}"),
         (clock, f"    engagement: ❤️ {tally['liked']} · 🔖 {tally['saved']} · ➕ {tally['followed']}"),
@@ -301,10 +315,12 @@ def simulate_session(conn, corpus_pool: dict, state: dict, account: str, day: da
             rows.append((session_id, n, utc(at), line))
             n += 1
     conn.executemany("INSERT INTO demo_log VALUES (?, ?, ?, ?)", rows)
-    conn.execute("INSERT INTO demo_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                 (session_id, account, day.isoformat(), utc(start), utc(clock), generated_at,
-                  f"{state['seed']}|{account}|{day}|{slot}", round(temperature, 3), json.dumps({**tally, "reels": seq})))
-    return {"session_id": session_id, "reels": seq, **tally}
+    conn.execute("INSERT INTO demo_sessions (session_id, account, simulated_date, simulated_start, simulated_end, kind, "
+                 "generated_at, seed, temperature, stats, batch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (session_id, account, day.isoformat(), utc(start), utc(clock), kind, generated_at,
+                  f"{state['seed']}|{batch}|{account}|{day}|{slot}", round(temperature, 3),
+                  json.dumps({**tally, "reels": seq}), batch))
+    return {"session_id": session_id, "reels": seq, "kind": kind, **tally}
 
 
 # ── Digests ───────────────────────────────────────────────────────────
@@ -337,7 +353,7 @@ def demo_digest(conn, account: str, day: datetime.date, generated_at: str, **gro
     data.update({"demo": True, "simulated_date": day.isoformat(), "generated_at": generated_at + "Z"})
     page = digests.render_html(built).replace(
         "<main>", '<main><div style="background:#f59e0b;color:#111;padding:8px 12px;font-weight:700;margin-bottom:14px">'
-                  f"DEMO — simulated sessions. Simulated day {day:%d %B %Y}; generated {generated_at} UTC.</div>", 1)
+                  f"Simulated sessions. Simulated day {day:%d %B %Y}; generated {generated_at} UTC.</div>", 1)
     for reel in (r for s in data["stories"] for r in s["reels"]):
         if reel["url"].startswith("https://www.instagram.com/reels/demo"):
             reel["url"] = ""
@@ -351,9 +367,14 @@ def demo_digest(conn, account: str, day: datetime.date, generated_at: str, **gro
 
 # ── Everything ────────────────────────────────────────────────────────
 
-def build(days: int = 14, sessions_per_day: int = 3, seed: int = 1, progress=print, today=None, **group_kwargs) -> dict:
-    """A fresh demo database: accounts, 14 days of sessions with logs, digests, and the demo feed model."""
+def build(days: int = 14, sessions_per_day: int = len(SESSIONS), seed: int = 1, progress=print, today=None,
+          fresh: bool = False, **group_kwargs) -> dict:
+    """A fresh simulation database: accounts, 14 days of sessions with logs, digests, and its feed model. It replaces
+    an existing one only with fresh=True (python -m gradient.simulate --fresh); to add to one, use append()."""
     generated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if os.path.exists(db.DEMO_DB_PATH) and not fresh:
+        raise RuntimeError(f"{db.DEMO_DB_PATH} already holds simulated sessions: append to it (--append), or pass "
+                           "--fresh to replace it")
     if os.path.exists(DEMO_DIR):
         for name in ("reels.db", "reels.db-wal", "reels.db-shm"):
             if os.path.exists(os.path.join(DEMO_DIR, name)):
@@ -383,6 +404,12 @@ def build(days: int = 14, sessions_per_day: int = 3, seed: int = 1, progress=pri
         progress(f"@{account}: {len(made)} simulated sessions, {sum(m['reels'] for m in made)} reels, "
                  f"{sum(m['liked'] for m in made)} likes; curated: {state['curated']}")
         out["accounts"][account] = {"sessions": len(made), "reels": sum(m["reels"] for m in made)}
+    finish(conn, span, generated_at, out, progress, **group_kwargs)
+    return out
+
+
+def finish(conn, span: list[datetime.date], generated_at: str, out: dict, progress=print, **group_kwargs) -> None:
+    """After sessions are added: every day's digest from all its sessions, the feed-topic model, the corpus feeds."""
     for account in store.ACCOUNTS:
         written = [d for d in (demo_digest(conn, account, day, generated_at, **group_kwargs) for day in span) if d]
         progress(f"@{account}: {len(written)} daily digests")
@@ -392,23 +419,150 @@ def build(days: int = 14, sessions_per_day: int = 3, seed: int = 1, progress=pri
     conn = db.get_connection(db.DEMO_DB_PATH)
     feed_model.train(conn, path=DEMO_FEED_MODEL, vectors_path=DEMO_FEED_VECTORS)
     conn.close()
-    progress("Demo feed-topic model trained.")
+    progress("Feed-topic model of the simulated sessions trained.")
     from gradient import ingest
 
     corpus = store.connect()
     out["corpus_feed"] = ingest.ingest_demo(corpus)
     corpus.close()
     progress(f"Served reels joined the personas' feeds in the training corpus: {out['corpus_feed']}")
+
+
+# ── Adding to an existing simulation ──────────────────────────────────
+
+# Sessions append() adds around the existing ones (07:30, 13:00, 20:00 plus up to 100 min, about 25 min each):
+# (local start, how it was started, minutes); each starts up to APPEND_JITTER minutes late
+APPEND_SESSIONS = ((datetime.time(6, 0), "manual", (30, 45)), (datetime.time(10, 0), "scheduled", (45, 60)),
+                   (datetime.time(15, 20), "manual", (45, 60)), (datetime.time(17, 30), "scheduled", (40, 55)),
+                   (datetime.time(22, 15), "manual", (35, 50)))
+APPEND_JITTER = 25
+
+
+def replay(conn, corpus_pool: dict, state: dict, session_id: int, index: dict) -> None:
+    """What the recommender learned from an existing session, in the order it happened: the reels it served, the
+    affinities its engagement taught, the creators it followed, and whether the feed counted as curated."""
+    rows = conn.execute("SELECT i.decision, i.liked, i.saved, i.followed, i.value_score, d.item_id FROM impressions i "
+                        "LEFT JOIN demo_items d ON d.code = i.code WHERE i.session_id = ? AND i.is_ad = 0 ORDER BY i.seq",
+                        (session_id,)).fetchall()
+    items, topics = corpus_pool["items"], corpus_pool["topics"]
+    for decision, liked, saved, followed, score, item_id in rows:
+        k = index.get(item_id)
+        if k is None:  # a reel no longer in the corpus pool: nothing to learn about it
+            continue
+        state["served"][k] = True
+        item = items[k]
+        signal = LEARN.get(decision, 1.0) * (1.05 if liked else 1.0) * (1.05 if saved else 1.0)
+        for table, key in ((state["affinity"], topics[k]), (state["stance"], item["stance"])):
+            table[key] = min(8.0, max(0.1, table.get(key, 1.0) * signal))
+        creator = item["creator"] or ""
+        state["creator_hits"][creator] = state["creator_hits"].get(creator, 0) + ((score or 0) >= 0.75)
+        if followed:
+            state["followed"].add(item["creator"])
+        state["judged"].append((score or 0) >= WATCH_THRESHOLD)
+        window = state["judged"][-100:]
+        if len(window) == 100 and sum(window) >= 50:
+            state["curated"] = True
+
+
+def free_start(start: datetime.datetime, minutes: float, busy: list[tuple], rng: random.Random) -> datetime.datetime:
+    """The planned start, or, when that would overlap a session already on the account's day, just after it."""
+    length = datetime.timedelta(minutes=minutes + 3)  # its last reel can run past the planned length
+    moved = True
+    while moved:
+        moved = False
+        for b_start, b_end in sorted(busy):
+            if start < b_end and b_start < start + length:
+                start, moved = b_end + datetime.timedelta(minutes=rng.randint(5, 15)), True
+    return start
+
+
+def append(seed: int = 2, progress=print, **group_kwargs) -> dict:
+    """More simulated sessions on the same days as an existing simulation, which is kept as it is: every existing
+    session, impression, log line and its generation time stay; the new ones record their own generation time and
+    batch. The recommender carries on from what the existing sessions taught it, day by day in time order."""
+    if not os.path.exists(db.DEMO_DB_PATH):
+        raise RuntimeError("No simulation to add to yet: python -m gradient.simulate")
+    generated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    batch = f"append-{generated_at[:10]}-s{seed}"
+    conn = db.get_connection(db.DEMO_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(demo_sessions)")}
+    for column in ("kind", "batch"):  # older simulations: add the columns, leave their rows' values empty
+        if column not in columns:
+            conn.execute(f"ALTER TABLE demo_sessions ADD COLUMN {column} TEXT")
+    span = [datetime.date.fromisoformat(d) for (d,) in
+            conn.execute("SELECT DISTINCT simulated_date FROM demo_sessions ORDER BY 1")]
+    if conn.execute("SELECT 1 FROM demo_sessions WHERE batch = ?", (batch,)).fetchone():
+        raise RuntimeError(f"Batch {batch} was already added today: pick another --seed")
+    before = conn.execute("SELECT COUNT(*) FROM impressions").fetchone()[0]
+    corpus = store.connect()
+    out = {"generated_at": generated_at, "batch": batch, "days": [span[0].isoformat(), span[-1].isoformat()],
+           "accounts": {}}
+    for account in store.ACCOUNTS:
+        corpus_pool = pool(corpus, account)
+        index = {item["id"]: k for k, item in enumerate(corpus_pool["items"])}
+        bias = biases.load(account)
+        scorer = jev.jev_version(bias.interests, persona=True, vision=False)
+        state = {"served": np.zeros(len(corpus_pool["items"]), dtype=bool), "affinity": {}, "stance": {},
+                 "creator_hits": {}, "followed": set(), "judged": [], "curated": False, "seed": seed}
+        existing = conn.execute("SELECT session_id, simulated_date, simulated_start, simulated_end FROM demo_sessions "
+                                "WHERE account = ? ORDER BY simulated_start", (account,)).fetchall()
+        # every reel the existing sessions served, on any day, is theirs: a new session on an earlier day mustn't show
+        # one of them first (the existing history was made without knowing about it)
+        for (item_id,) in conn.execute("SELECT DISTINCT d.item_id FROM impressions i JOIN sessions s ON s.id = i.session_id "
+                                       "JOIN demo_items d ON d.code = i.code WHERE s.account = ?", (account,)):
+            if item_id in index:
+                state["served"][index[item_id]] = True
+        aware = lambda text: datetime.datetime.fromisoformat(text).replace(tzinfo=datetime.timezone.utc)  # noqa: E731
+        made = []
+        for d_index, day in enumerate(span):
+            today = [r for r in existing if r["simulated_date"] == day.isoformat()]
+            events = [(aware(r["simulated_start"]), "existing", r["session_id"]) for r in today]
+            busy = [(aware(r["simulated_start"]), aware(r["simulated_end"])) for r in today]
+            day_end = datetime.datetime.combine(day, datetime.time(23, 59)).astimezone()
+            for slot, (at, kind, (shortest, longest)) in enumerate(APPEND_SESSIONS):
+                rng = random.Random(f"{seed}|{batch}|{account}|{day}|{slot}")
+                start = (datetime.datetime.combine(day, at).astimezone()
+                         + datetime.timedelta(minutes=rng.randint(0, APPEND_JITTER)))
+                minutes = rng.uniform(shortest, longest)
+                start = free_start(start, minutes, busy, rng)
+                if start + datetime.timedelta(minutes=minutes + 3) > day_end:
+                    continue  # no room left in the day for it
+                busy.append((start, start + datetime.timedelta(minutes=minutes + 3)))
+                events.append((start, "new", (slot, rng, (start, kind, minutes))))
+            for _at, what, payload in sorted(events, key=lambda e: e[0]):
+                if what == "existing":
+                    replay(conn, corpus_pool, state, payload, index)
+                else:
+                    slot, rng, plan = payload
+                    made.append(simulate_session(conn, corpus_pool, state, account, day, slot, d_index, len(span), rng,
+                                                 scorer, generated_at, plan=plan, batch=batch))
+            conn.commit()
+        progress(f"@{account}: {len(made)} more simulated sessions, {sum(m['reels'] for m in made)} reels, "
+                 f"{sum(m['liked'] for m in made)} likes")
+        out["accounts"][account] = {"sessions": len(made), "reels": sum(m["reels"] for m in made)}
+    corpus.close()
+    out["impressions"] = {"before": before, "added": conn.execute("SELECT COUNT(*) FROM impressions").fetchone()[0] - before}
+    conn.row_factory = None
+    finish(conn, span, generated_at, out, progress, **group_kwargs)
     return out
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DEMO: 14 days of simulated sessions for both personas")
+    parser = argparse.ArgumentParser(description="14 days of simulated sessions for both personas")
     parser.add_argument("--days", type=int, default=14)
-    parser.add_argument("--sessions", type=int, default=3, help="sessions per day per account")
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--sessions", type=int, default=len(SESSIONS), help="sessions per day per account")
+    parser.add_argument("--seed", type=int, default=None, help="default: 1 for a new simulation, 2 for --append")
+    parser.add_argument("--append", action="store_true",
+                        help="add sessions around the existing ones on the same days, keeping every existing record")
+    parser.add_argument("--fresh", action="store_true", help="replace an existing simulation")
     args = parser.parse_args()
-    print(json.dumps(build(args.days, args.sessions, args.seed, progress=lambda m: print(m, flush=True)), indent=1))
+    say = lambda m: print(m, flush=True)  # noqa: E731
+    if args.append:
+        out = append(2 if args.seed is None else args.seed, progress=say)
+    else:
+        out = build(args.days, args.sessions, 1 if args.seed is None else args.seed, progress=say, fresh=args.fresh)
+    print(json.dumps(out, indent=1))
 
 
 if __name__ == "__main__":
